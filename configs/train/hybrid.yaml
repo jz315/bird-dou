@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "mode": "hybrid",
+  "policy_coef": 1.0,
+  "value_coef": 0.5,
+  "mc_q_coef": 0.25,
+  "win_coef": 0.25,
+  "score_coef": 0.10,
+  "belief_coef": 0.20,
+  "kd_coef": 0.0,
+  "entropy_coef": 0.01,
+  "aux_coef": 0.05
+}

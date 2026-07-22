@@ -1,0 +1,14 @@
+[package]
+name = "ddz-search"
+description = "Hand decomposition and endgame search for BIRD-Dou"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ddz-core = { path = "../ddz-core" }
+ddz-rules = { path = "../ddz-rules" }
+serde.workspace = true
+
+[lints]
+workspace = true

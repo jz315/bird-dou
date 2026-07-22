@@ -1,0 +1,26 @@
+schema_version: 1
+rule_config_id: 2
+profile: canonical_full
+landlord_plays_first: true
+bidding:
+  mode: score
+  max_bid: 3
+  redeal_on_all_pass: true
+bottom_cards_public: true
+doubling_enabled: true
+bomb_multiplier: 2
+rocket_multiplier: 2
+spring:
+  landlord_spring_enabled: true
+  anti_spring_enabled: true
+  multiplier: 2
+four_with_two:
+  two_singles_enabled: true
+  two_pairs_enabled: true
+  single_attachments: may_share_rank
+  pair_attachments: distinct_ranks
+airplane:
+  single_attachments: distinct_ranks
+  pair_attachments: distinct_ranks
+score_cap: null
+reward_mode: raw_score

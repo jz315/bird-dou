@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "trigger": {
+    "total_cards_threshold": 18,
+    "player_cards_threshold": 5,
+    "belief_entropy_threshold": 0.25,
+    "bomb_decision_enabled": true
+  },
+  "rollout": {
+    "max_actions": 500,
+    "exact_max_total_cards": 12,
+    "exact_max_nodes": 1000000,
+    "risk_coefficient": 0.25,
+    "score_scale": 16.0
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "feature_encoder": "native",
+  "feature_schema": "douzero_54x15_v1",
+  "architecture": "douzero_lstm_mlp_v1",
+  "history_actions": 15,
+  "history_shape": [5, 162],
+  "lstm_hidden": 128,
+  "mlp_hidden": 512,
+  "landlord_input": 373,
+  "farmer_input": 484,
+  "output": "scalar_action_value"
+}

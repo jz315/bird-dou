@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "dataset_path": "artifacts/datasets/belief_smoke.npz",
+  "model_path": "configs/model/bird_dou_belief_v1.yaml",
+  "output_directory": "artifacts/train/belief_pretrain",
+  "calibration_bins": 10,
+  "training": {
+    "epochs": 1,
+    "batch_size": 16,
+    "learning_rate": 0.0003,
+    "weight_decay": 0.00001,
+    "max_grad_norm": 10.0,
+    "device": "cpu",
+    "freeze_public_encoder": true,
+    "seed": 5005
+  }
+}

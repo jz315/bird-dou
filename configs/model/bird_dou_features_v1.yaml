@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "history_max_length": 96,
+  "history_early_events": 8,
+  "decomposition_features": true,
+  "min_decompositions_cap": 255
+}

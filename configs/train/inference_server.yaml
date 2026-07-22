@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "max_inference_states": 128,
+  "max_inference_actions": 8192,
+  "microbatch_wait_ms": 2.0,
+  "max_queue_requests": 1024,
+  "device": "cuda"
+}

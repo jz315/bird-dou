@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "policy_weight": 1.0,
+  "value_weight": 1.0,
+  "temperature": 1.0,
+  "minimum_retained_fraction": 0.8
+}

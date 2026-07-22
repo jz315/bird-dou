@@ -1,0 +1,34 @@
+# Rust build output
+/target/
+
+# Python build and test output
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+python/birddou/_native*.pyd
+python/birddou/_native*.so
+python/birddou/_native*.dylib
+
+# Local environments and editor state
+.venv/
+.env
+.idea/
+.vscode/
+
+# Generated research artifacts; manifests remain tracked.
+/artifacts/*
+!/artifacts/README.md
+!/artifacts/baselines/
+/artifacts/baselines/*
+!/artifacts/baselines/douzero/
+/artifacts/baselines/douzero/*
+!/artifacts/baselines/douzero/manifest.toml
+!/artifacts/baselines/perfectdou/
+/artifacts/baselines/perfectdou/*
+!/artifacts/baselines/perfectdou/manifest.toml

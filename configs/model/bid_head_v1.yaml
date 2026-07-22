@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "architecture": "bird_dou_bid_head_v1",
+  "d_model": 128,
+  "rank_layers": 2,
+  "history_layers": 1,
+  "attention_heads": 4,
+  "hidden_multiplier": 2,
+  "history_max_length": 3,
+  "dropout": 0.0
+}

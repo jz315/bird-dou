@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "gamma": 1.0,
+  "rho_bar": 1.0,
+  "c_bar": 1.0,
+  "policy_gradient_rho_bar": 1.0,
+  "max_log_importance_weight": 20.0
+}

@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "architecture": "bird_dou_farmer_team_critic_v1",
+  "feature_schema_version": 1,
+  "teacher_config": "configs/model/privileged_teacher_v1.yaml",
+  "head": {
+    "hidden_multiplier": 2,
+    "dropout": 0.0
+  }
+}

@@ -1,0 +1,15 @@
+schema_version: 1
+rules: configs/rules/douzero_post_bid.yaml
+deal_generator: splitmix64_v1
+master_seed: 20260722
+deal_count: 100
+candidate: longest_move
+baseline: first_legal
+bootstrap:
+  confidence_level: 0.95
+  resamples: 10000
+  seed: 20260722
+  max_chunk_elements: 1000000
+precision:
+  metric: win_rate
+  maximum_ci_half_width: 0.01

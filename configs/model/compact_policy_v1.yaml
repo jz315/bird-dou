@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "architecture": "bird_dou_compact_policy_v1",
+  "value_hidden_dim": 64,
+  "dropout": 0.0,
+  "proposal": {
+    "schema_version": 1,
+    "architecture": "bird_dou_proposal_v1",
+    "hidden_dim": 96,
+    "hidden_layers": 2,
+    "dropout": 0.0,
+    "min_k": 8,
+    "max_k": 32,
+    "uncertainty_scale": 1.0,
+    "full_action_fraction": 0.1,
+    "exploration_seed": 20260722
+  }
+}

@@ -1,0 +1,72 @@
+schema_version = 1
+name = "DouZero"
+repository = "https://github.com/kwai/DouZero.git"
+commit = "718a5c920bf3361e34178a38f3b80458e176b351"
+license = "Apache-2.0"
+license_file = "LICENSE"
+source_directory = "source"
+weights_required = true
+weights_directory = "weights"
+required_files = [
+  "douzero/env/env.py",
+  "douzero/env/game.py",
+  "douzero/env/move_detector.py",
+  "douzero/env/move_generator.py",
+  "douzero/env/move_selector.py",
+  "douzero/dmc/models.py",
+]
+
+[weight_mirror]
+repository = "https://huggingface.co/palemoky/douzero-baselines"
+revision = "57b3914046c2a0877016b8b8830fd07cf5b0ba08"
+base_url = "https://huggingface.co/palemoky/douzero-baselines/resolve/57b3914046c2a0877016b8b8830fd07cf5b0ba08/checkpoints"
+upstream_google_drive = "https://drive.google.com/drive/folders/1NmM2cXnI5CIWHaLJeoDZMiwt6lOTV_UB"
+upstream_baidu_share = "https://pan.baidu.com/s/18g-JUKad6D8rmBONXUDuOQ"
+
+[[weight_files]]
+set = "douzero_ADP"
+role = "landlord"
+relative_path = "douzero_ADP/landlord.ckpt"
+mirror_path = "douzero_ADP/landlord.ckpt"
+size = 5835440
+sha256 = "6f2971813495e9c509cbd4a101213c49587472942fa0f018d04c139a6a647c2d"
+
+[[weight_files]]
+set = "douzero_ADP"
+role = "landlord_down"
+relative_path = "douzero_ADP/landlord_down.ckpt"
+mirror_path = "douzero_ADP/landlord_down.ckpt"
+size = 6062768
+sha256 = "c173dbe30258f19b6392c30ab1e330b6b3090bbd9ccdc89a9b18123a6ab6e2d9"
+
+[[weight_files]]
+set = "douzero_ADP"
+role = "landlord_up"
+relative_path = "douzero_ADP/landlord_up.ckpt"
+mirror_path = "douzero_ADP/landlord_up.ckpt"
+size = 6062768
+sha256 = "7fb7c495ff095db2ddadd8f9f8fd53cad840211578dabc83bbcc8d75085f843e"
+
+[[weight_files]]
+set = "douzero_WP"
+role = "landlord"
+relative_path = "douzero_WP/landlord.ckpt"
+mirror_path = "douzero_WP/landlord.ckpt"
+size = 5835434
+sha256 = "132e26479fcb69f457ddbf1ad32a7bdc3aa73cde80a28cc91f29a62c6075955a"
+
+[[weight_files]]
+set = "douzero_WP"
+role = "landlord_down"
+relative_path = "douzero_WP/landlord_down.ckpt"
+mirror_path = "douzero_WP/landlord_down.ckpt"
+size = 6062768
+sha256 = "964720faf583f4905662c94aaf73b1a97352b76ae3686fcc949beabbacdd95d1"
+
+[[weight_files]]
+set = "douzero_WP"
+role = "landlord_up"
+relative_path = "douzero_WP/landlord_up.ckpt"
+mirror_path = "douzero_WP/landlord_up.ckpt"
+size = 6062768
+sha256 = "b849ea518e66f088d635d3a29956da880f7b5ca89fabc5f70fc356c106ca6a15"

@@ -1,0 +1,16 @@
+[package]
+name = "ddz-core"
+description = "Core state and replay types for BIRD-Dou"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_yaml_ng.workspace = true
+
+[lints]
+workspace = true

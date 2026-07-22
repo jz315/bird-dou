@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "monte_carlo": {
+    "max_actions": 1000,
+    "all_pass_win_target": 0.5
+  },
+  "loss": {
+    "policy_weight": 1.0,
+    "win_weight": 1.0,
+    "score_weight": 0.25,
+    "policy_temperature": 0.25,
+    "score_scale": 16.0,
+    "entropy_weight": 0.001
+  },
+  "curriculum": {
+    "max_calibration_error": 0.08,
+    "min_call_rate": 0.1,
+    "max_call_rate": 0.95,
+    "max_redeal_rate": 0.35,
+    "min_complete_games": 10000
+  }
+}

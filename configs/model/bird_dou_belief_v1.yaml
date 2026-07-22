@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "architecture": "bird_dou_belief_v1",
+  "feature_schema_version": 1,
+  "d_model": 256,
+  "rank_mixer": {
+    "blocks": 4,
+    "attention_every": 2,
+    "attention_heads": 8,
+    "rank_embedding_dim": 32,
+    "count_embedding_dim": 16,
+    "flag_embedding_dim": 8,
+    "swiglu_multiplier": 2,
+    "dropout": 0.0,
+    "drop_path": 0.05,
+    "rms_norm_epsilon": 0.000001,
+    "convolution_enabled": true,
+    "attention_enabled": true,
+    "numeric_enabled": true
+  },
+  "history": {
+    "gru_enabled": true,
+    "transformer_enabled": true,
+    "role_gate_enabled": true,
+    "gru_layers": 2,
+    "transformer_layers": 3,
+    "attention_heads": 8,
+    "max_length": 96,
+    "count_embedding_dim": 8,
+    "categorical_embedding_dim": 8,
+    "feedforward_multiplier": 4,
+    "dropout": 0.0
+  },
+  "action": {
+    "blocks": 2,
+    "attention_heads": 8,
+    "count_embedding_dim": 16,
+    "meta_embedding_dim": 16,
+    "swiglu_multiplier": 2,
+    "dropout": 0.0,
+    "decomposition_count_cap": 255,
+    "post_hand_enabled": true,
+    "cross_attention_enabled": true,
+    "set_context_enabled": true
+  },
+  "role_adapter_dim": 64,
+  "score_quantiles": 11,
+  "output": {
+    "hidden_multiplier": 4,
+    "hidden_layers": 4
+  },
+  "belief": {
+    "count_embedding_dim": 16,
+    "hidden_multiplier": 2,
+    "dropout": 0.0
+  },
+  "belief_enabled": true
+}

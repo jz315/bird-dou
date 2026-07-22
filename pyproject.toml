@@ -1,0 +1,64 @@
+[build-system]
+requires = ["maturin>=1.10,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "bird-dou"
+version = "0.1.0"
+description = "Research-grade DouDizhu AI infrastructure"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26,<2.5"]
+
+[project.scripts]
+bird-dou-evaluate = "birddou.cli.evaluate:main"
+bird-dou-crossplay = "birddou.cli.crossplay:main"
+bird-dou-export-deployment = "birddou.cli.export_deployment:main"
+bird-dou-generate-dataset = "birddou.cli.generate_dataset:main"
+bird-dou-inspect-replay = "birddou.cli.inspect_replay:main"
+bird-dou-train-dmc = "birddou.cli.train_dmc:main"
+bird-dou-train = "birddou.cli.train:main"
+bird-dou-train-full-game = "birddou.cli.train_full_game:main"
+bird-dou-train-belief = "birddou.cli.train_belief:main"
+
+[project.optional-dependencies]
+model = [
+    "torch>=2.6,<3.0",
+]
+dev = [
+    "mypy>=1.13",
+    "pytest>=8.0",
+    "ruff>=0.11",
+    "torch>=2.6,<3.0",
+]
+rlcard = [
+    "rlcard==1.0.7",
+]
+
+[tool.maturin]
+bindings = "pyo3"
+manifest-path = "crates/ddz-pyo3/Cargo.toml"
+module-name = "birddou._native"
+python-source = "python"
+editable-profile = "dev"
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+pythonpath = ["python"]
+testpaths = ["tests/python", "tests/differential"]
+markers = [
+    "differential: requires the separately fetched pinned DouZero source checkout",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["python", "tests/python"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
+
+[tool.mypy]
+files = ["python", "tests/python"]
+python_version = "3.11"
+strict = true

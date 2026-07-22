@@ -1,0 +1,67 @@
+"""Observation, history, and legal-action feature encoders."""
+
+from .action_features import CandidateActionFeatures, encode_candidate_actions
+from .douzero import (
+    DOUZERO_CARD_WIDTH,
+    DOUZERO_FARMER_WIDTH,
+    DOUZERO_FEATURE_SCHEMA_VERSION,
+    DOUZERO_HISTORY_ACTIONS,
+    DOUZERO_HISTORY_ROWS,
+    DOUZERO_HISTORY_WIDTH,
+    DOUZERO_LANDLORD_WIDTH,
+    DouZeroFeatureBatch,
+    DouZeroFeatureError,
+    encode_douzero_features,
+    rank_counts_to_douzero_array,
+)
+from .encoder import encode_observations
+from .history import PublicHistoryFeatures, encode_public_history
+from .ragged import (
+    ACTION_META_COLUMNS,
+    DECOMPOSITION_DISABLED_GROUPS,
+    DEFAULT_HISTORY_MAX_LENGTH,
+    FEATURE_SCHEMA_VERSION,
+    HISTORY_META_COLUMNS,
+    MOVE_KIND_CODES,
+    RANK_CATEGORICAL_COLUMNS,
+    RANK_NUMERIC_COLUMNS,
+    SCALAR_COLUMNS,
+    FeatureConfig,
+    FeatureEncodingError,
+    RaggedBatch,
+    encode_ragged_batch,
+    load_feature_config,
+)
+
+__all__ = (
+    "DOUZERO_CARD_WIDTH",
+    "DOUZERO_FARMER_WIDTH",
+    "DOUZERO_FEATURE_SCHEMA_VERSION",
+    "DOUZERO_HISTORY_ACTIONS",
+    "DOUZERO_HISTORY_ROWS",
+    "DOUZERO_HISTORY_WIDTH",
+    "DOUZERO_LANDLORD_WIDTH",
+    "DouZeroFeatureBatch",
+    "DouZeroFeatureError",
+    "CandidateActionFeatures",
+    "PublicHistoryFeatures",
+    "encode_candidate_actions",
+    "encode_douzero_features",
+    "encode_observations",
+    "encode_public_history",
+    "rank_counts_to_douzero_array",
+    "ACTION_META_COLUMNS",
+    "DEFAULT_HISTORY_MAX_LENGTH",
+    "DECOMPOSITION_DISABLED_GROUPS",
+    "FEATURE_SCHEMA_VERSION",
+    "HISTORY_META_COLUMNS",
+    "MOVE_KIND_CODES",
+    "RANK_CATEGORICAL_COLUMNS",
+    "RANK_NUMERIC_COLUMNS",
+    "SCALAR_COLUMNS",
+    "FeatureConfig",
+    "FeatureEncodingError",
+    "RaggedBatch",
+    "encode_ragged_batch",
+    "load_feature_config",
+)

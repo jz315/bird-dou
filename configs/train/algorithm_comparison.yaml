@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "modes": ["dmc", "vtrace", "hybrid"],
+  "environment_frames": 1000000,
+  "learner_updates": 10000,
+  "seeds": [7001, 7002, 7003],
+  "model_config": "configs/model/bird_dou_belief_v1.yaml",
+  "rules_config": "configs/rules/douzero_post_bid.yaml",
+  "actor_processes": 8,
+  "envs_per_actor": 32,
+  "unroll_length": 32,
+  "max_inference_states": 128,
+  "max_inference_actions": 8192,
+  "device": "cuda"
+}

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "self_play_weight": 0.65,
+  "historical_weight": 0.20,
+  "exploiter_weight": 0.10,
+  "fixed_baseline_weight": 0.05,
+  "seed": 20260722
+}

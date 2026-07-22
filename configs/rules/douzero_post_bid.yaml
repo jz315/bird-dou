@@ -1,0 +1,26 @@
+schema_version: 1
+rule_config_id: 1
+profile: douzero_post_bid
+landlord_plays_first: true
+bidding:
+  mode: disabled
+  max_bid: null
+  redeal_on_all_pass: false
+bottom_cards_public: true
+doubling_enabled: false
+bomb_multiplier: 2
+rocket_multiplier: 2
+spring:
+  landlord_spring_enabled: false
+  anti_spring_enabled: false
+  multiplier: 1
+four_with_two:
+  two_singles_enabled: true
+  two_pairs_enabled: true
+  single_attachments: may_share_rank
+  pair_attachments: distinct_ranks
+airplane:
+  single_attachments: may_share_rank
+  pair_attachments: distinct_ranks
+score_cap: null
+reward_mode: average_difference_points

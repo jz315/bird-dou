@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "trainer_mode": "dmc",
+  "rules_path": "configs/rules/douzero_post_bid.yaml",
+  "output_directory": "artifacts/train/dmc_smoke",
+  "initialization": "douzero_ADP",
+  "baseline_manifest": "artifacts/baselines/douzero/manifest.toml",
+  "episodes": 100,
+  "master_seed": 20260722,
+  "epsilon": 0.01,
+  "learning_rate": 0.000001,
+  "weight_decay": 0.0,
+  "loss": "mse",
+  "huber_delta": 1.0,
+  "max_grad_norm": 40.0,
+  "device": "cpu",
+  "amp": false,
+  "checkpoint_every": 10,
+  "evaluation_deals": 20,
+  "evaluation_seed": 15015,
+  "bootstrap_resamples": 1000,
+  "require_beats_random": true
+}

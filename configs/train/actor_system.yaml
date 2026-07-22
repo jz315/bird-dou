@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "actor_processes": 8,
+  "envs_per_actor": 32,
+  "trajectory_queue_capacity": 256,
+  "max_restarts_per_actor": 2,
+  "process_join_timeout_s": 5.0,
+  "queue_poll_timeout_s": 0.05,
+  "start_method": "spawn"
+}

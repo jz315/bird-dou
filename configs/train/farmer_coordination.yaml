@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "critic_coef": 1.0,
+  "counterfactual_actor_coef": 0.1,
+  "rollout_coef": 0.25,
+  "huber_delta": 1.0,
+  "rollout_top_n": 4,
+  "max_rollout_states_per_batch": 32,
+  "max_rollout_actions": 1000,
+  "specialist_learning_rate": 0.0001,
+  "specialist_weight_decay": 0.00001,
+  "protect_landlord": true,
+  "handcrafted_cooperation_rewards": false
+}

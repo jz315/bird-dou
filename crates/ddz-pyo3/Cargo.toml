@@ -1,0 +1,23 @@
+[package]
+name = "ddz-pyo3"
+description = "Python bindings for the BIRD-Dou Rust environment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ddz-batch = { path = "../ddz-batch" }
+ddz-core = { path = "../ddz-core" }
+ddz-rules = { path = "../ddz-rules" }
+ddz-search = { path = "../ddz-search" }
+numpy.workspace = true
+pyo3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

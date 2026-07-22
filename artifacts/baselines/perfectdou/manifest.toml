@@ -1,0 +1,37 @@
+schema_version = 1
+name = "PerfectDou"
+baseline_id = "perfectdou"
+repository = "https://github.com/Netease-Games-AI-Lab-Guangzhou/PerfectDou.git"
+commit = "594404922ee3810e2d84b80bb2c2846cb20e5390"
+license = "Apache-2.0"
+license_file = "LICENSE"
+source_directory = "source"
+execution_protocol = "bird-dou-perfectdou-jsonl-v1"
+runtime_python = "3.7"
+runtime_platform = "x86_64-linux-gnu"
+runtime_note = "Official feature encoder is distributed only as a CPython 3.7 Linux extension."
+
+[[required_files]]
+relative_path = "perfectdou/model/perfectdou/landlord.onnx"
+size = 4452574
+sha256 = "f0b7d00830416be5d99972199efc196261e1e7bb8337601ae5e4b0fbf937991c"
+
+[[required_files]]
+relative_path = "perfectdou/model/perfectdou/landlord_down.onnx"
+size = 4456021
+sha256 = "c7c19f44961dc2c9614b6f9261bc803fbc9e4fc7131f6df2d7b00bbc380562e2"
+
+[[required_files]]
+relative_path = "perfectdou/model/perfectdou/landlord_up.onnx"
+size = 4454669
+sha256 = "74a8e25e01916272e3473161226cb6d4ef7b83fdd0a7305dccc73d0d66ae0b42"
+
+[[required_files]]
+relative_path = "perfectdou/env/encode.cpython-37m-x86_64-linux-gnu.so"
+size = 833792
+sha256 = "b5ebcd6ff697c5ff463b8f5df80693d3c7720d544582ebd6d6bcd082e2006901"
+
+[[required_files]]
+relative_path = "libCalculateLeftHands.so"
+size = 14400
+sha256 = "f445c8547d0bb21d5b83b918afd8276a8d6376c55c2f6dfa6da7dad699e10c57"
