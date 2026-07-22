@@ -1,8 +1,8 @@
 use ddz_rules::{
     derive_attempt_seed, AttemptActionRecordV2, AttemptCompletionReasonV2, AttemptStatusV2,
-    CallDecisionV2, DoubleDecisionV2, GameActionV2, HuanleMatchV2, MatchDecisionEventV2,
-    MatchError, PhaseV2, RevealDecisionV2, RuleConfigV2, SystemEventV2,
-    ATTEMPT_SEED_DERIVATION_ALGORITHM, SHUFFLE_ALGORITHM,
+    CallDecisionV2, GameActionV2, HuanleMatchV2, MatchDecisionEventV2, MatchError, PhaseV2,
+    RevealDecisionV2, RuleConfigV2, SystemEventV2, ATTEMPT_SEED_DERIVATION_ALGORITHM,
+    SHUFFLE_ALGORITHM,
 };
 
 const HUANLE_V2_FIXTURE: &str =
@@ -13,12 +13,13 @@ fn rules() -> RuleConfigV2 {
         .expect("fully explicit Huanle parser fixture must remain valid")
 }
 
-fn record_all_pass_calls(game: &mut HuanleMatchV2) {
+fn resolve_no_reveal_all_pass_through_call_state(game: &mut HuanleMatchV2) {
     drive_to_calling_without_reveal(game);
-    for actor in 0..3 {
-        game.record_accepted_action(actor, GameActionV2::Call(CallDecisionV2::PassCall))
-            .unwrap();
+    while game.phase() == PhaseV2::Calling {
+        let actor = game.state().current_attempt.call.unwrap().current_player;
+        game.apply_call(actor, CallDecisionV2::PassCall).unwrap();
     }
+    assert_eq!(game.phase(), PhaseV2::PreDealReveal);
 }
 
 fn drive_to_calling_without_reveal(game: &mut HuanleMatchV2) {
@@ -49,6 +50,9 @@ fn drive_to_calling_without_reveal(game: &mut HuanleMatchV2) {
                 }
             }
             PhaseV2::Calling => unreachable!("loop condition excludes calling"),
+            PhaseV2::Robbing | PhaseV2::BottomReveal => {
+                unreachable!("R004 helper must stop before later phase boundaries")
+            }
         }
     }
 }
@@ -90,10 +94,8 @@ fn initial_attempt_is_seeded_deterministic_and_retains_its_physical_deck() {
 fn repeated_all_passes_preserve_every_attempt_and_can_reach_a_terminal_match_lifecycle() {
     let mut game = HuanleMatchV2::new(91, &rules()).unwrap();
 
-    record_all_pass_calls(&mut game);
-    game.resolve_no_reveal_all_pass().unwrap();
-    record_all_pass_calls(&mut game);
-    game.resolve_no_reveal_all_pass().unwrap();
+    resolve_no_reveal_all_pass_through_call_state(&mut game);
+    resolve_no_reveal_all_pass_through_call_state(&mut game);
 
     assert_eq!(game.state().attempt_index, 2);
     assert_eq!(game.state().completed_attempts.len(), 2);
@@ -117,43 +119,44 @@ fn repeated_all_passes_preserve_every_attempt_and_can_reach_a_terminal_match_lif
     );
 
     drive_to_calling_without_reveal(&mut game);
-    game.record_accepted_action(1, GameActionV2::Call(CallDecisionV2::CallLandlord))
+    let caller = game.state().current_attempt.call.unwrap().current_player;
+    game.apply_call(caller, CallDecisionV2::CallLandlord)
         .unwrap();
-    game.record_landlord_resolution(1).unwrap();
-    game.record_accepted_action(2, GameActionV2::Double(DoubleDecisionV2::Decline))
-        .unwrap();
+    game.record_landlord_resolution(caller).unwrap();
     game.complete_after_authoritative_card_play(2).unwrap();
 
     assert!(game.state().terminal);
-    assert_eq!(game.state().total_accepted_action_count, 170);
+    assert_eq!(game.state().total_accepted_action_count, 169);
     assert_eq!(
         game.state().current_attempt.status,
-        AttemptStatusV2::LandlordResolved { landlord: 1 }
+        AttemptStatusV2::LandlordResolved { landlord: caller }
     );
     assert_eq!(game.state().final_result.unwrap().winner, 2);
-    assert_eq!(game.decision_events().len(), 174);
-    assert_eq!(game.system_events().len(), 61);
+    assert_eq!(game.decision_events().len(), 173);
+    assert_eq!(game.system_events().len(), 62);
 }
 
 #[test]
 fn deterministic_decision_replay_reconstructs_all_attempts_and_action_budgets_exactly() {
     let mut original = HuanleMatchV2::new(4242, &rules()).unwrap();
-    record_all_pass_calls(&mut original);
-    original.resolve_no_reveal_all_pass().unwrap();
+    resolve_no_reveal_all_pass_through_call_state(&mut original);
     drive_to_calling_without_reveal(&mut original);
+    let caller = original
+        .state()
+        .current_attempt
+        .call
+        .unwrap()
+        .current_player;
     original
-        .record_accepted_action(0, GameActionV2::Call(CallDecisionV2::CallLandlord))
+        .apply_call(caller, CallDecisionV2::CallLandlord)
         .unwrap();
-    original.record_landlord_resolution(0).unwrap();
-    original
-        .record_accepted_action(1, GameActionV2::Double(DoubleDecisionV2::Decline))
-        .unwrap();
+    original.record_landlord_resolution(caller).unwrap();
     original.complete_after_authoritative_card_play(0).unwrap();
 
     let replay = HuanleMatchV2::replay(4242, &rules(), original.decision_events()).unwrap();
 
     assert_eq!(replay, original);
-    assert_eq!(replay.state().total_accepted_action_count, 113);
+    assert_eq!(replay.state().total_accepted_action_count, 112);
 }
 
 #[test]
@@ -167,7 +170,7 @@ fn invalid_lifecycle_transitions_are_transactional() {
     ));
     assert_eq!(game, initial);
     assert!(matches!(
-        game.record_accepted_action(3, GameActionV2::Call(CallDecisionV2::PassCall)),
+        game.record_accepted_action(3, &GameActionV2::Call(CallDecisionV2::PassCall)),
         Err(MatchError::InvalidSeat { seat: 3 })
     ));
     assert_eq!(game, initial);
@@ -194,13 +197,14 @@ fn invalid_lifecycle_transitions_are_transactional() {
     assert_eq!(revealed, before_invalid_all_pass);
 
     drive_to_calling_without_reveal(&mut game);
-    game.record_accepted_action(0, GameActionV2::Call(CallDecisionV2::CallLandlord))
+    let caller = game.state().current_attempt.call.unwrap().current_player;
+    game.apply_call(caller, CallDecisionV2::CallLandlord)
         .unwrap();
-    game.record_landlord_resolution(0).unwrap();
+    game.record_landlord_resolution(caller).unwrap();
     let resolved = game.clone();
     assert!(matches!(
         game.resolve_no_reveal_all_pass(),
-        Err(MatchError::AttemptAlreadyHasLandlord { landlord: 0 })
+        Err(MatchError::AttemptAlreadyHasLandlord { landlord }) if landlord == caller
     ));
     assert_eq!(game, resolved);
 }

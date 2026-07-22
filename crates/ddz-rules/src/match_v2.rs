@@ -2,8 +2,9 @@
 //!
 //! This module deliberately owns only match boundaries: deterministic attempt
 //! seeds, all-pass redeals, action-budget accounting, and replayable lifecycle
-//! decisions. Reveal, calling, robbing, doubling, card play, and settlement
-//! remain authoritative phase implementations in their respective tickets.
+//! decisions. R004 owns reveal/dealing and R005 owns initial calling; robbing,
+//! bottom handling, doubling, card play, and settlement remain authoritative
+//! phase implementations in their respective tickets.
 
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -23,11 +24,11 @@ const HUANLE_DEALT_CARD_COUNT: usize = HUANLE_CARDS_PER_PLAYER * PLAYER_COUNT;
 /// Stable derivation used for the randomized pre-deal declaration order.
 pub const PRE_DEAL_REVEAL_ORDER_ALGORITHM: &str = "deal_seed_permutation_v1";
 
-/// Authoritative phase reached by the R003/R004 Huanle lifecycle.
+/// Authoritative phase reached by the R003–R005 Huanle lifecycle.
 ///
-/// R004 deliberately stops at the `Calling` boundary. The call, rob, bottom,
-/// doubling, card-play, and terminal transitions are introduced by their
-/// owning tickets instead of being guessed here.
+/// R005 owns `Calling` and stops at the `Robbing`/`BottomReveal` boundaries.
+/// Rob queues, bottom-card ownership, doubling, card play, and settlement are
+/// introduced by their owning tickets instead of being guessed here.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PhaseV2 {
@@ -38,6 +39,12 @@ pub enum PhaseV2 {
     DealingReveal,
     /// All seventeen cards have been dealt and R005 owns the next transition.
     Calling,
+    /// A first positive call selected a provisional candidate; R006 owns the
+    /// rob queue and its final landlord resolution.
+    Robbing,
+    /// Calling all-pass with a first revealer resolved a landlord; R007 owns
+    /// the bottom-card transfer and all later phase transitions.
+    BottomReveal,
 }
 
 /// Irrevocable reveal information accumulated before the call phase.
@@ -58,6 +65,25 @@ pub struct RevealStateV2 {
     pub first_reveal_sequence: Option<u64>,
     /// Maximum of all accepted reveal factors, or one before any reveal.
     pub maximum_factor: u32,
+}
+
+/// Initial call-landlord state for one fully dealt Huanle attempt.
+///
+/// It deliberately captures only R005 facts. The R006 rob state derives its
+/// eligibility from `declined` and its initial candidate from `caller`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallStateV2 {
+    /// Seat that received the first call opportunity.
+    pub first_caller: Seat,
+    /// Seat that must make the next call decision while in `Calling`.
+    pub current_player: Seat,
+    /// Whether each seat has made its sole initial calling decision.
+    pub acted: [bool; PLAYER_COUNT],
+    /// Whether each seat explicitly passed the initial call.
+    pub declined: [bool; PLAYER_COUNT],
+    /// First positive caller, if calling ended by `CallLandlord`.
+    pub caller: Option<Seat>,
 }
 
 /// Safe, reveal-phase observation for one player.
@@ -213,6 +239,9 @@ pub struct DealAttemptStateV2 {
     pub pending_during_deal_reveal: [bool; PLAYER_COUNT],
     /// First calling seat, available only after all seventeen rounds complete.
     pub first_caller: Option<Seat>,
+    /// Explicit initial calling state while R005 owns the phase and retained at
+    /// the R006/R007 boundary for deterministic replay and audit.
+    pub call: Option<CallStateV2>,
     /// Server-authoritative partial/full physical hands. This is deliberately
     /// private so network code must use `reveal_observation` rather than
     /// accidentally returning hidden opponent cards.
@@ -256,6 +285,8 @@ pub struct AttemptSummaryV2 {
     pub reveal: RevealStateV2,
     /// First caller resolved before the all-pass disposition.
     pub first_caller: Option<Seat>,
+    /// Complete call state at the all-pass disposition.
+    pub call: Option<CallStateV2>,
     /// All accepted player actions attributed to this attempt.
     pub accepted_action_count: u64,
     /// Complete accepted player-action history for this closed attempt.
@@ -383,6 +414,20 @@ pub enum SystemEventV2 {
         attempt_index: u32,
         /// First caller selected from the first revealer or seeded fallback.
         first_caller: Seat,
+    },
+    /// The first positive call ended Calling and opened the R006 rob boundary.
+    CallingEndedWithCall {
+        /// Attempt whose call phase ended.
+        attempt_index: u32,
+        /// Provisional landlord candidate selected by the first call.
+        caller: Seat,
+    },
+    /// Every seat passed Calling, so the first revealer directly became landlord.
+    CallingAllPassAssignedLandlord {
+        /// Attempt whose call phase exhausted all seats.
+        attempt_index: u32,
+        /// First revealer assigned as landlord by the frozen policy.
+        landlord: Seat,
     },
     /// A no-reveal all-pass transitioned within the same match to another attempt.
     Redeal {
@@ -560,7 +605,7 @@ impl HuanleMatchV2 {
                 .get(usize::from(attempt.pre_deal_reveal_cursor))
                 .is_some_and(|expected| *expected == actor),
             PhaseV2::DealingReveal => attempt.pending_during_deal_reveal[usize::from(actor)],
-            PhaseV2::Calling => false,
+            PhaseV2::Calling | PhaseV2::Robbing | PhaseV2::BottomReveal => false,
         };
         if !permitted {
             return Ok(Vec::new());
@@ -574,9 +619,41 @@ impl HuanleMatchV2 {
                 GameActionV2::DuringDealReveal(RevealDecisionV2::Reveal),
                 GameActionV2::DuringDealReveal(RevealDecisionV2::Decline),
             ],
-            PhaseV2::Calling => Vec::new(),
+            PhaseV2::Calling | PhaseV2::Robbing | PhaseV2::BottomReveal => Vec::new(),
         };
         Ok(actions)
+    }
+
+    /// Enumerate the two initial calling actions for the current caller.
+    ///
+    /// R005 deliberately exposes no rob action here: a successful first call
+    /// opens the `Robbing` boundary for R006, while a full initial pass uses
+    /// the explicit all-pass disposition in this ticket.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid seat, terminal match, or corrupted
+    /// calling boundary state.
+    pub fn legal_call_actions(&self, actor: Seat) -> Result<Vec<GameActionV2>, MatchError> {
+        self.ensure_not_terminal()?;
+        validate_seat(actor)?;
+        if self.phase() != PhaseV2::Calling {
+            return Ok(Vec::new());
+        }
+        let call = self
+            .state
+            .current_attempt
+            .call
+            .ok_or(MatchError::StateInvariant(
+                "calling phase must retain an explicit call state",
+            ))?;
+        if actor != call.current_player {
+            return Ok(Vec::new());
+        }
+        Ok(vec![
+            GameActionV2::Call(CallDecisionV2::CallLandlord),
+            GameActionV2::Call(CallDecisionV2::PassCall),
+        ])
     }
 
     /// Apply the next deterministic-order pre-deal reveal declaration.
@@ -624,28 +701,41 @@ impl HuanleMatchV2 {
         Ok(())
     }
 
-    /// Record one accepted player action without imposing a game-rule cap.
+    /// Apply one authoritative initial call-landlord decision.
     ///
-    /// Phase state machines call this after, and only after, an action has been accepted. It is
-    /// an audit budget, not a rollout or trainer safety limit.
-    ///
-    /// # Errors
-    ///
-    /// Reveal actions are intentionally rejected here: R004 must validate them
-    /// through [`Self::apply_pre_deal_reveal`] or
-    /// [`Self::apply_during_deal_reveal`]. Until their own tickets land, this
-    /// method remains a narrow audit seam for validated later-phase actions at
-    /// the `Calling` boundary.
+    /// A first `CallLandlord` immediately ends `Calling`, records its caller,
+    /// and opens `Robbing` for R006. A `PassCall` advances to the next seat;
+    /// after all three pass, the first revealer becomes landlord or a hidden
+    /// all-pass attempt redeals within the same match.
     ///
     /// # Errors
     ///
-    /// Returns an error for a terminal match, invalid actor, non-calling phase,
-    /// a direct reveal action, or arithmetic/sequence overflow. Errors are
-    /// transactional.
+    /// Returns an error for an incorrect phase or actor, an already-acted
+    /// caller, invalid seat, terminal match, or event-sequence overflow.
+    /// Errors are transactional.
+    pub fn apply_call(&mut self, actor: Seat, decision: CallDecisionV2) -> Result<(), MatchError> {
+        let mut next = self.clone();
+        next.apply_call_inner(actor, decision)?;
+        next.validate()?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Reject an attempt to bypass an owning phase state machine.
+    ///
+    /// This former R003 audit seam remains public only to give old callers a
+    /// deterministic error. It never accepts an action: R004 and R005 now own
+    /// reveal/call legality, and future tickets must likewise expose their own
+    /// authoritative transitions instead of fabricating accepted actions.
+    ///
+    /// # Errors
+    ///
+    /// Always returns the error for the action's owning state machine after
+    /// validating `actor`; it leaves the match unchanged.
     pub fn record_accepted_action(
         &mut self,
         actor: Seat,
-        action: GameActionV2,
+        action: &GameActionV2,
     ) -> Result<(), MatchError> {
         let mut next = self.clone();
         next.record_accepted_action_inner(actor, action)?;
@@ -656,9 +746,8 @@ impl HuanleMatchV2 {
 
     /// Close a no-reveal all-pass attempt and automatically begin the next deterministic attempt.
     ///
-    /// Calling logic is intentionally outside R003. Its authoritative implementation must first
-    /// record each accepted action through [`Self::record_accepted_action`] and then call
-    /// this method only for the frozen no-reveal all-pass branch.
+    /// R005 invokes this only after its explicit `CallStateV2` records three
+    /// `PassCall` decisions and confirms that no player revealed.
     ///
     /// # Errors
     ///
@@ -688,6 +777,19 @@ impl HuanleMatchV2 {
             return Err(MatchError::AllPassAfterReveal);
         }
         self.require_phase(PhaseV2::Calling)?;
+        let call = self
+            .state
+            .current_attempt
+            .call
+            .ok_or(MatchError::StateInvariant(
+                "calling phase must retain an explicit call state",
+            ))?;
+        if call.caller.is_some()
+            || !call.acted.iter().all(|acted| *acted)
+            || !call.declined.iter().all(|declined| *declined)
+        {
+            return Err(MatchError::NoRevealAllPassRequiresCompleteCallPass);
+        }
 
         let from_attempt = self.state.attempt_index;
         let to_attempt = from_attempt
@@ -702,6 +804,7 @@ impl HuanleMatchV2 {
             cards_received: self.state.current_attempt.cards_received,
             reveal: self.state.current_attempt.reveal,
             first_caller: self.state.current_attempt.first_caller,
+            call: self.state.current_attempt.call,
             accepted_action_count: self.state.current_attempt.accepted_action_count,
             action_history: self.state.current_attempt.action_history.clone(),
             completion_reason: AttemptCompletionReasonV2::AllPass,
@@ -756,7 +859,35 @@ impl HuanleMatchV2 {
         self.ensure_not_terminal()?;
         self.ensure_unresolved_attempt()?;
         validate_seat(landlord)?;
-        self.require_phase(PhaseV2::Calling)?;
+        let call = self
+            .state
+            .current_attempt
+            .call
+            .ok_or(MatchError::StateInvariant(
+                "landlord resolution requires the retained R005 call state",
+            ))?;
+        match self.phase() {
+            PhaseV2::Calling => {
+                if call.caller.is_some()
+                    || !call.acted.iter().all(|acted| *acted)
+                    || !call.declined.iter().all(|declined| *declined)
+                    || self.state.current_attempt.reveal.first_revealer != Some(landlord)
+                {
+                    return Err(MatchError::LandlordResolutionRequiresCallOutcome);
+                }
+            }
+            PhaseV2::Robbing => {
+                if call.caller.is_none() {
+                    return Err(MatchError::LandlordResolutionRequiresCallOutcome);
+                }
+            }
+            actual => {
+                return Err(MatchError::UnexpectedPhase {
+                    expected: PhaseV2::Calling,
+                    actual,
+                });
+            }
+        }
         if self.state.current_attempt.accepted_action_count == 0 {
             return Err(MatchError::LandlordResolutionWithoutAcceptedActions);
         }
@@ -838,7 +969,10 @@ impl HuanleMatchV2 {
         decision_events: &[MatchDecisionEventV2],
     ) -> Result<Self, MatchError> {
         let mut replay = Self::new(match_seed, rules)?;
-        for expected in decision_events {
+        let mut cursor = 0;
+        while cursor < decision_events.len() {
+            let expected = &decision_events[cursor];
+            let before = replay.decision_events.len();
             match expected.clone() {
                 MatchDecisionEventV2::PlayerActionAccepted {
                     attempt_index,
@@ -854,7 +988,8 @@ impl HuanleMatchV2 {
                         GameActionV2::DuringDealReveal(decision) => {
                             replay.apply_during_deal_reveal(actor, decision)?;
                         }
-                        action => replay.record_accepted_action(actor, action)?,
+                        GameActionV2::Call(decision) => replay.apply_call(actor, decision)?,
+                        action => replay.record_accepted_action(actor, &action)?,
                     }
                 }
                 MatchDecisionEventV2::AllPass { attempt_index, .. } => {
@@ -878,19 +1013,29 @@ impl HuanleMatchV2 {
                     replay.complete_after_authoritative_card_play(winner)?;
                 }
             }
-            let actual =
+            let generated =
                 replay
                     .decision_events
-                    .last()
-                    .cloned()
+                    .get(before..)
                     .ok_or(MatchError::StateInvariant(
-                        "replay did not record a decision event",
+                        "replay decision-log boundary must remain valid",
                     ))?;
-            if actual != *expected {
+            let next_cursor = cursor
+                .checked_add(generated.len())
+                .ok_or(MatchError::EventSequenceOverflow)?;
+            if generated.is_empty() || next_cursor > decision_events.len() {
                 return Err(MatchError::ReplayEventMismatch {
                     sequence: expected.sequence(),
                 });
             }
+            for (actual, expected) in generated.iter().zip(&decision_events[cursor..next_cursor]) {
+                if actual != expected {
+                    return Err(MatchError::ReplayEventMismatch {
+                        sequence: expected.sequence(),
+                    });
+                }
+            }
+            cursor = next_cursor;
         }
         replay.validate()?;
         Ok(replay)
@@ -1105,19 +1250,127 @@ impl HuanleMatchV2 {
         Ok(())
     }
 
-    fn record_accepted_action_inner(
+    fn apply_call_inner(
         &mut self,
         actor: Seat,
-        action: GameActionV2,
+        decision: CallDecisionV2,
     ) -> Result<(), MatchError> {
         self.ensure_not_terminal()?;
         validate_seat(actor)?;
-        if action.is_r004_reveal_action() {
-            return Err(MatchError::RevealActionRequiresStateMachine);
-        }
         self.require_phase(PhaseV2::Calling)?;
-        self.append_accepted_action(actor, action)?;
+        let call = self
+            .state
+            .current_attempt
+            .call
+            .ok_or(MatchError::StateInvariant(
+                "calling phase must retain an explicit call state",
+            ))?;
+        if actor != call.current_player {
+            return Err(MatchError::CallOutOfTurn {
+                expected: call.current_player,
+                actual: actor,
+            });
+        }
+        if call.acted[usize::from(actor)] {
+            return Err(MatchError::CallAlreadyActed { seat: actor });
+        }
+
+        self.append_accepted_action(actor, GameActionV2::Call(decision))?;
+        match decision {
+            CallDecisionV2::CallLandlord => {
+                let call =
+                    self.state
+                        .current_attempt
+                        .call
+                        .as_mut()
+                        .ok_or(MatchError::StateInvariant(
+                            "calling phase must retain an explicit call state",
+                        ))?;
+                call.acted[usize::from(actor)] = true;
+                call.caller = Some(actor);
+                self.state.current_attempt.phase = PhaseV2::Robbing;
+                self.push_system_event(SystemEventV2::CallingEndedWithCall {
+                    attempt_index: self.state.attempt_index,
+                    caller: actor,
+                })?;
+            }
+            CallDecisionV2::PassCall => {
+                let all_acted = {
+                    let call = self.state.current_attempt.call.as_mut().ok_or(
+                        MatchError::StateInvariant(
+                            "calling phase must retain an explicit call state",
+                        ),
+                    )?;
+                    let actor_index = usize::from(actor);
+                    call.acted[actor_index] = true;
+                    call.declined[actor_index] = true;
+                    call.acted.iter().all(|acted| *acted)
+                };
+                if !all_acted {
+                    let next_player = next_unacted_call_seat(
+                        actor,
+                        self.state
+                            .current_attempt
+                            .call
+                            .as_ref()
+                            .ok_or(MatchError::StateInvariant(
+                                "calling phase must retain an explicit call state",
+                            ))?
+                            .acted,
+                    )?;
+                    self.state
+                        .current_attempt
+                        .call
+                        .as_mut()
+                        .ok_or(MatchError::StateInvariant(
+                            "calling phase must retain an explicit call state",
+                        ))?
+                        .current_player = next_player;
+                    return Ok(());
+                }
+
+                if let Some(landlord) = self.state.current_attempt.reveal.first_revealer {
+                    self.record_landlord_resolution_inner(landlord)?;
+                    self.state.current_attempt.phase = PhaseV2::BottomReveal;
+                    self.push_system_event(SystemEventV2::CallingAllPassAssignedLandlord {
+                        attempt_index: self.state.attempt_index,
+                        landlord,
+                    })?;
+                } else {
+                    self.resolve_no_reveal_all_pass_inner()?;
+                }
+            }
+        }
         Ok(())
+    }
+
+    fn record_accepted_action_inner(
+        &mut self,
+        actor: Seat,
+        action: &GameActionV2,
+    ) -> Result<(), MatchError> {
+        self.ensure_not_terminal()?;
+        validate_seat(actor)?;
+        match action {
+            GameActionV2::PreDealReveal(_) | GameActionV2::DuringDealReveal(_) => {
+                Err(MatchError::RevealActionRequiresStateMachine)
+            }
+            GameActionV2::Call(_) => Err(MatchError::CallActionRequiresStateMachine),
+            GameActionV2::Rob(_) => {
+                Err(MatchError::ActionRequiresOwningStateMachine { phase: "robbing" })
+            }
+            GameActionV2::PostBottomReveal(_) => {
+                Err(MatchError::ActionRequiresOwningStateMachine {
+                    phase: "post_bottom_reveal",
+                })
+            }
+            GameActionV2::Double(_) => {
+                Err(MatchError::ActionRequiresOwningStateMachine { phase: "doubling" })
+            }
+            GameActionV2::Play(_) => {
+                Err(MatchError::ActionRequiresOwningStateMachine { phase: "card_play" })
+            }
+        }
     }
 
     fn append_accepted_action(
@@ -1269,6 +1522,7 @@ impl HuanleMatchV2 {
             .unwrap_or(self.state.current_attempt.first_caller_candidate);
         self.state.current_attempt.phase = PhaseV2::Calling;
         self.state.current_attempt.first_caller = Some(first_caller);
+        self.state.current_attempt.call = Some(new_call_state(first_caller));
         self.push_system_event(SystemEventV2::CallingOpened {
             attempt_index: self.state.attempt_index,
             first_caller,
@@ -1333,6 +1587,7 @@ fn new_attempt(match_seed: u64, attempt_index: u32) -> DealAttemptStateV2 {
         },
         pending_during_deal_reveal: [false; PLAYER_COUNT],
         first_caller: None,
+        call: None,
         hands: std::array::from_fn(|_| Vec::with_capacity(HUANLE_CARDS_PER_PLAYER)),
         bottom_cards: [
             deck[HUANLE_DEALT_CARD_COUNT],
@@ -1359,6 +1614,29 @@ fn pre_deal_reveal_order_for_seed(deal_seed: u64) -> [Seat; PLAYER_COUNT] {
     let position = usize::try_from(deal_seed % (ORDERS.len() as u64))
         .expect("pre-deal order index is below the permutation table length");
     ORDERS[position]
+}
+
+const fn new_call_state(first_caller: Seat) -> CallStateV2 {
+    CallStateV2 {
+        first_caller,
+        current_player: first_caller,
+        acted: [false; PLAYER_COUNT],
+        declined: [false; PLAYER_COUNT],
+        caller: None,
+    }
+}
+
+fn next_unacted_call_seat(actor: Seat, acted: [bool; PLAYER_COUNT]) -> Result<Seat, MatchError> {
+    for offset in 1..=PLAYER_COUNT {
+        let candidate = (usize::from(actor) + offset) % PLAYER_COUNT;
+        if !acted[candidate] {
+            return u8::try_from(candidate)
+                .map_err(|_| MatchError::StateInvariant("Huanle seat index must fit in u8"));
+        }
+    }
+    Err(MatchError::StateInvariant(
+        "calling must have an unacted seat before selecting the next caller",
+    ))
 }
 
 fn validate_attempt(
@@ -1451,6 +1729,7 @@ fn validate_attempt(
         || progress.reveal != attempt.reveal
         || progress.pending_during_deal_reveal != attempt.pending_during_deal_reveal
         || progress.first_caller != attempt.first_caller
+        || progress.call != attempt.call
     {
         return Err(MatchError::StateInvariant(
             "attempt reveal/dealing state must replay exactly from accepted actions",
@@ -1494,6 +1773,7 @@ fn validate_summary(
         || progress.cards_received != summary.cards_received
         || progress.reveal != summary.reveal
         || progress.first_caller != summary.first_caller
+        || progress.call != summary.call
     {
         return Err(MatchError::StateInvariant(
             "completed attempt reveal/dealing summary must replay exactly",
@@ -1502,7 +1782,12 @@ fn validate_summary(
     if summary.completion_reason == AttemptCompletionReasonV2::AllPass
         && (summary.phase_at_completion != PhaseV2::Calling
             || summary.reveal.first_revealer.is_some()
-            || summary.reveal.revealed.iter().any(|revealed| *revealed))
+            || summary.reveal.revealed.iter().any(|revealed| *revealed)
+            || !summary.call.is_some_and(|call| {
+                call.caller.is_none()
+                    && call.acted.iter().all(|acted| *acted)
+                    && call.declined.iter().all(|declined| *declined)
+            }))
     {
         return Err(MatchError::StateInvariant(
             "no-reveal all-pass summary must close only a fully dealt hidden attempt",
@@ -1519,6 +1804,7 @@ struct RevealProgressV2 {
     reveal: RevealStateV2,
     pending_during_deal_reveal: [bool; PLAYER_COUNT],
     first_caller: Option<Seat>,
+    call: Option<CallStateV2>,
 }
 
 fn replay_reveal_progress(
@@ -1540,6 +1826,7 @@ fn replay_reveal_progress(
         },
         pending_during_deal_reveal: [false; PLAYER_COUNT],
         first_caller: None,
+        call: None,
     };
     for record in action_history {
         match &record.action {
@@ -1562,10 +1849,16 @@ fn replay_reveal_progress(
                     rules,
                 )?;
             }
+            GameActionV2::Call(decision) => {
+                replay_call_action(&mut progress, record, *decision)?;
+            }
             _ => {
-                if progress.phase != PhaseV2::Calling {
+                if !matches!(
+                    progress.phase,
+                    PhaseV2::Calling | PhaseV2::Robbing | PhaseV2::BottomReveal
+                ) {
                     return Err(MatchError::StateInvariant(
-                        "later-phase action occurred before R004 opened calling",
+                        "later-phase action occurred before R004/R005 opened its boundary",
                     ));
                 }
             }
@@ -1662,6 +1955,45 @@ fn replay_during_deal_reveal_action(
     Ok(())
 }
 
+fn replay_call_action(
+    progress: &mut RevealProgressV2,
+    record: &AttemptActionRecordV2,
+    decision: CallDecisionV2,
+) -> Result<(), MatchError> {
+    if progress.phase != PhaseV2::Calling {
+        return Err(MatchError::StateInvariant(
+            "initial call action occurred outside the calling phase",
+        ));
+    }
+    let call = progress.call.as_mut().ok_or(MatchError::StateInvariant(
+        "calling phase must retain an explicit call state",
+    ))?;
+    if record.actor != call.current_player || call.acted[usize::from(record.actor)] {
+        return Err(MatchError::StateInvariant(
+            "call action must come once from the current caller",
+        ));
+    }
+    let actor_index = usize::from(record.actor);
+    call.acted[actor_index] = true;
+    match decision {
+        CallDecisionV2::CallLandlord => {
+            call.caller = Some(record.actor);
+            progress.phase = PhaseV2::Robbing;
+        }
+        CallDecisionV2::PassCall => {
+            call.declined[actor_index] = true;
+            if call.acted.iter().all(|acted| *acted) {
+                if progress.reveal.first_revealer.is_some() {
+                    progress.phase = PhaseV2::BottomReveal;
+                }
+            } else {
+                call.current_player = next_unacted_call_seat(record.actor, call.acted)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn accept_reveal_progress(
     reveal: &mut RevealStateV2,
     actor: Seat,
@@ -1745,6 +2077,7 @@ fn open_calling_progress(
             .first_revealer
             .unwrap_or(first_caller_candidate),
     );
+    progress.call = progress.first_caller.map(new_call_state);
     Ok(())
 }
 
@@ -1803,12 +2136,6 @@ impl AttemptActionRecordV2 {
     }
 }
 
-impl GameActionV2 {
-    const fn is_r004_reveal_action(&self) -> bool {
-        matches!(self, Self::PreDealReveal(_) | Self::DuringDealReveal(_))
-    }
-}
-
 /// Errors produced by the v2 match lifecycle coordinator.
 #[derive(Debug)]
 pub enum MatchError {
@@ -1847,12 +2174,35 @@ pub enum MatchError {
     },
     /// A caller bypassed the authoritative R004 reveal state machine.
     RevealActionRequiresStateMachine,
+    /// A call action was attempted through the generic audit seam instead of R005.
+    CallActionRequiresStateMachine,
+    /// A later phase action was attempted before its authoritative ticket exists.
+    ActionRequiresOwningStateMachine {
+        /// Name of the phase that must own the action.
+        phase: &'static str,
+    },
+    /// A call decision came from a seat other than the current caller.
+    CallOutOfTurn {
+        /// Seat entitled to make the next call decision.
+        expected: Seat,
+        /// Seat that attempted the decision instead.
+        actual: Seat,
+    },
+    /// A seat attempted a second initial calling decision.
+    CallAlreadyActed {
+        /// Rejected seat.
+        seat: Seat,
+    },
     /// A no-reveal all-pass was reported without any accepted player-action evidence.
     AllPassWithoutAcceptedActions,
     /// A no-reveal all-pass was reported after an accepted reveal action.
     AllPassAfterReveal,
+    /// A no-reveal redeal was requested before every caller explicitly passed.
+    NoRevealAllPassRequiresCompleteCallPass,
     /// A landlord resolution was reported without any accepted player-action evidence.
     LandlordResolutionWithoutAcceptedActions,
+    /// A landlord resolution did not follow a valid R005 calling outcome.
+    LandlordResolutionRequiresCallOutcome,
     /// An operation requires an unresolved attempt but a landlord already exists.
     AttemptAlreadyHasLandlord {
         /// Existing resolved landlord.
@@ -1909,6 +2259,28 @@ impl Display for MatchError {
                 formatter,
                 "pre-deal and during-deal reveal actions require the R004 state machine"
             ),
+            Self::CallActionRequiresStateMachine => {
+                write!(
+                    formatter,
+                    "initial call actions require the R005 state machine"
+                )
+            }
+            Self::ActionRequiresOwningStateMachine { phase } => {
+                write!(
+                    formatter,
+                    "{phase} actions require their owning state machine"
+                )
+            }
+            Self::CallOutOfTurn { expected, actual } => write!(
+                formatter,
+                "initial call belongs to seat {expected}, not seat {actual}"
+            ),
+            Self::CallAlreadyActed { seat } => {
+                write!(
+                    formatter,
+                    "seat {seat} has already made its initial call decision"
+                )
+            }
             Self::AllPassWithoutAcceptedActions => {
                 write!(
                     formatter,
@@ -1921,12 +2293,20 @@ impl Display for MatchError {
                     "no-reveal all-pass is invalid after a reveal action"
                 )
             }
+            Self::NoRevealAllPassRequiresCompleteCallPass => write!(
+                formatter,
+                "no-reveal all-pass requires three explicit initial PassCall decisions"
+            ),
             Self::LandlordResolutionWithoutAcceptedActions => {
                 write!(
                     formatter,
                     "landlord resolution requires accepted action evidence"
                 )
             }
+            Self::LandlordResolutionRequiresCallOutcome => write!(
+                formatter,
+                "landlord resolution requires a completed all-pass reveal branch or robbing caller"
+            ),
             Self::AttemptAlreadyHasLandlord { landlord } => {
                 write!(
                     formatter,
@@ -1962,9 +2342,15 @@ impl Error for MatchError {
             | Self::DuringDealRevealNotPending { .. }
             | Self::RevealAlreadyIrrevocable { .. }
             | Self::RevealActionRequiresStateMachine
+            | Self::CallActionRequiresStateMachine
+            | Self::ActionRequiresOwningStateMachine { .. }
+            | Self::CallOutOfTurn { .. }
+            | Self::CallAlreadyActed { .. }
             | Self::AllPassWithoutAcceptedActions
             | Self::AllPassAfterReveal
+            | Self::NoRevealAllPassRequiresCompleteCallPass
             | Self::LandlordResolutionWithoutAcceptedActions
+            | Self::LandlordResolutionRequiresCallOutcome
             | Self::AttemptAlreadyHasLandlord { .. }
             | Self::LandlordNotResolved
             | Self::ActionCountOverflow

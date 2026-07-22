@@ -50,6 +50,9 @@ fn finish_dealing_with_declines(game: &mut HuanleMatchV2) {
                 respond_to_current_dealing_round(game, [RevealDecisionV2::Decline; 3]);
             }
             PhaseV2::Calling => unreachable!("loop condition excludes calling"),
+            PhaseV2::Robbing | PhaseV2::BottomReveal => {
+                unreachable!("R004 helper must stop before later phase boundaries")
+            }
         }
     }
 }
@@ -210,7 +213,7 @@ fn reveal_actions_are_phase_checked_irrevocable_and_transactional() {
     assert!(matches!(
         game.record_accepted_action(
             expected,
-            GameActionV2::PreDealReveal(RevealDecisionV2::Reveal)
+            &GameActionV2::PreDealReveal(RevealDecisionV2::Reveal)
         ),
         Err(MatchError::RevealActionRequiresStateMachine)
     ));

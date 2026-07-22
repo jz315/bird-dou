@@ -281,11 +281,24 @@ revealed seats only. It has no deck, bottom-card collection, or unrevealed
 opponent hand field. It is not the full v2 observation schema, unknown-pool,
 serialization, or undo implementation reserved for R009.
 
+R005 adds `CallStateV2` at the Calling boundary. Its only legal actions are
+`CallLandlord` and `PassCall`, and only `current_player` may use one. The first
+positive call sets `caller` and opens `Robbing` without assigning a final
+landlord or manufacturing a rob action. A pass marks both `acted` and
+`declined`, allowing R006 to derive eligibility as `!declined`. After all three
+passes, a first revealer is deterministically recorded as landlord and the
+phase stops at `BottomReveal`; without a revealer, the fully auditable call
+state produces the existing same-match `AllPass` redeal. Direct generic action
+recording rejects every phase action so no later phase can be simulated before
+its ticket owns it.
+
 The coordinator has a replayable decision log and a separately ordered system
-log. R004 validates reveal actions directly; direct generic recording rejects
-pre-deal and during-deal reveal variants. Call, rob, bottom, double, play, and
-settlement remain later phase state machines. This preserves every attempt's
-action budget while keeping phase legality in its owning ticket.
+log. R004/R005 validate reveal and call actions directly. One accepted call
+action may deterministically append its immediate all-pass lifecycle event;
+replay compares that entire generated event suffix rather than accepting an
+unvalidated shortcut. Rob, bottom, double, play, and settlement remain later
+phase state machines. This preserves every attempt's action budget while
+keeping phase legality in its owning ticket.
 
 ## `douzero_post_bid`
 

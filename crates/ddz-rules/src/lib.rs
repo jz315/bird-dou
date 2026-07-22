@@ -28,7 +28,7 @@ pub use engine::{
 pub use generator::{generate_follow_moves, generate_lead_moves, GenerateMovesError};
 pub use match_v2::{
     AttemptActionRecordV2, AttemptCompletionReasonV2, AttemptStatusV2, AttemptSummaryV2,
-    CallDecisionV2, DealAttemptStateV2, DoubleDecisionV2, GameActionV2, HuanleMatchV2,
+    CallDecisionV2, CallStateV2, DealAttemptStateV2, DoubleDecisionV2, GameActionV2, HuanleMatchV2,
     MatchCompletionV2, MatchDecisionEventV2, MatchError, MatchStateV2, PhaseV2, RevealDecisionV2,
     RevealObservationV2, RevealStateV2, RobDecisionV2, SystemEventRecordV2, SystemEventV2,
     PRE_DEAL_REVEAL_ORDER_ALGORITHM,
