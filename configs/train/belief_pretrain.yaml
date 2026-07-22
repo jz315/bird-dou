@@ -1,7 +1,18 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "dataset_path": "artifacts/datasets/belief_smoke.npz",
   "model_path": "configs/model/bird_dou_belief_v1.yaml",
+  "rules_path": "configs/rules/douzero_post_bid.yaml",
+  "feature_path": "configs/model/bird_dou_features_v1.yaml",
+  "decomposition_features": false,
+  "base_checkpoint": {
+    "path": "artifacts/train/bird_dou_dmc_smoke/checkpoint.pt",
+    "sha256": "1116539488f165a6d3e11fa79fb8ebd2aaa350a3fd52c0aeaeb7b0190da69ea8",
+    "policy_version": 1,
+    "model_fingerprint": "9280df8c6108454591451b432b23eb6d4c0c2ace9e181be87ded942fcd75cace",
+    "feature_fingerprint": "483f6eddc5f4815556ce9be86f32c91b54fa0b1eddbdc9a076e0a46add5299d7",
+    "rules_hash": "5c11ba7779af3123248fba9c09aebce3c0f5e9e79f8835e3d8be6d1d176095e9"
+  },
   "output_directory": "artifacts/train/belief_pretrain",
   "calibration_bins": 10,
   "training": {

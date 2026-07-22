@@ -66,12 +66,21 @@ bird-dou-generate-dataset --games 1 --seed 5005 \
   --output artifacts/datasets/belief_smoke.npz
 ```
 
-## Offline pretraining, calibration, and joint fine-tuning
+## E020 warm-start, offline pretraining, and behavior anchoring
 
-Offline training freezes the public rank/history/state encoder and optimizes exact
-NLL in shuffled mini-batches. It can then unfreeze the shared encoder and jointly
-optimize behavior-policy likelihood plus weighted Belief NLL; the joint path is
-tested to deliver gradients to both public and CRF parameters. Configuration is
+The CLI refuses to train a randomly initialized public policy. It pins an E020
+checkpoint by SHA-256, policy version, base-model fingerprint, feature fingerprint,
+and rules hash; loads its weights strictly into `model.base`; requires the residual
+scale to be exactly zero; and proves bit-identical `policy_logit` and `mc_q` on the
+training dataset before the first NLL update. That identity and parity report are
+stored in the Belief checkpoint. The feature fingerprint uses the parsed feature
+config plus the explicit `decomposition_features` training override, matching E020.
+
+Offline training then freezes the public rank/history/state encoder and optimizes
+exact NLL in shuffled mini-batches. The optional follow-up stage is deliberately
+named `behavior_anchored_belief_finetune`: it imitates recorded behavior actions
+plus weighted Belief NLL to limit representation drift. It is not DMC, on-policy
+RL, Teacher distillation, or evidence of policy improvement. Configuration is
 in [`../configs/train/belief_pretrain.yaml`](../configs/train/belief_pretrain.yaml):
 
 ```bash
@@ -81,8 +90,8 @@ bird-dou-train-belief --config configs/train/belief_pretrain.yaml \
 
 The command reports trained and uniform constrained NLL and writes reliability
 bins, Brier score, and expected calibration error for 2, both jokers, and any
-bomb. The seed-5005 one-game smoke produced 54 mixed-policy states and reduced
-mean NLL from the uniform `5.1511` baseline to `4.6409` after four updates. This
+bomb. The seed-5005 one-game warm-start smoke produced 54 mixed-policy states and
+reduced mean NLL from the uniform `5.1511` baseline to `4.6691` after four updates. This
 small smoke verifies mechanics and is not a strength claim; policy improvement,
 label-shuffle degradation, and calibration confidence intervals require the
 fixed-budget M5 experiment matrix before reporting research conclusions.

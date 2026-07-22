@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import cast
 
 import torch
 
+from birddou import load_rule_config
 from birddou.belief import belief_nll, calibration_report, uniform_belief_nll
 from birddou.belief.data import load_belief_dataset
 from birddou.belief.training import (
+    BeliefBaseCheckpointIdentity,
     BeliefOfflineTrainer,
     BeliefPretrainConfig,
     save_calibration_json,
+    warm_start_belief_from_base_checkpoint,
 )
+from birddou.features import load_feature_config
 from birddou.models.belief_bird_dou import (
     BeliefBirdDouModel,
     belief_constraints_from_batch,
@@ -42,7 +48,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = config_path.parents[2]
     dataset_path = _project_path(root, _string(raw, "dataset_path"))
     model_path = _project_path(root, _string(raw, "model_path"))
+    rules_path = _project_path(root, _string(raw, "rules_path"))
+    feature_path = _project_path(root, _string(raw, "feature_path"))
     output_directory = _project_path(root, _string(raw, "output_directory"))
+    base = _mapping(raw.get("base_checkpoint"), "base_checkpoint")
     training = _mapping(raw.get("training"), "training")
     pretrain = BeliefPretrainConfig(
         schema_version=_integer(raw, "schema_version"),
@@ -58,7 +67,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     dataset = load_belief_dataset(dataset_path)
     torch.manual_seed(pretrain.seed)
     model = BeliefBirdDouModel(load_belief_bird_dou_config(model_path))
-    trainer = BeliefOfflineTrainer(model, pretrain)
+    identity = BeliefBaseCheckpointIdentity(
+        path=_project_path(root, _string(base, "path")),
+        sha256=_string(base, "sha256"),
+        policy_version=_integer(base, "policy_version"),
+        model_fingerprint=_string(base, "model_fingerprint"),
+        feature_fingerprint=_string(base, "feature_fingerprint"),
+        rules_hash=_string(base, "rules_hash"),
+    )
+    feature_config = replace(
+        load_feature_config(feature_path),
+        decomposition_features=_boolean(raw, "decomposition_features"),
+    )
+    actual_feature_fingerprint = _stable_hash(asdict(feature_config))
+    actual_rules_hash = _stable_hash(load_rule_config(rules_path))
+    if identity.feature_fingerprint != actual_feature_fingerprint:
+        raise RuntimeError("Belief base feature fingerprint differs from feature config")
+    if identity.rules_hash != actual_rules_hash:
+        raise RuntimeError("Belief base rules hash differs from rules config")
+    warm_start = warm_start_belief_from_base_checkpoint(
+        model,
+        dataset.select(
+            torch.arange(min(8, dataset.state_count), dtype=torch.int64)
+        ).batch,
+        identity,
+        device=pretrain.device,
+    )
+    trainer = BeliefOfflineTrainer(model, pretrain, warm_start=warm_start)
     output_directory.mkdir(parents=True, exist_ok=True)
     result = trainer.train(dataset, output_directory / "belief_pretrain.pt")
 
@@ -93,12 +128,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name, report in reports.items():
         save_calibration_json(report, output_directory / f"calibration_{name}.json")
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "checkpoint": str(result.checkpoint_path),
         "updates": result.update_count,
         "states": dataset.state_count,
         "trained_nll": trained_nll,
         "uniform_nll": uniform_nll,
+        "base_warm_start": warm_start.to_dict(),
         "calibration": {
             name: {
                 "brier_score": report.brier_score,
@@ -154,6 +190,11 @@ def _boolean(values: Mapping[str, object], key: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"config {key} must be boolean")
     return value
+
+
+def _stable_hash(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 if __name__ == "__main__":

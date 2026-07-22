@@ -17,9 +17,11 @@ from birddou.belief.data import (
     save_belief_dataset,
 )
 from birddou.belief.training import (
+    BeliefBaseCheckpointIdentity,
     BeliefOfflineTrainer,
     BeliefPretrainConfig,
-    joint_belief_policy_loss,
+    behavior_anchored_belief_loss,
+    warm_start_belief_from_base_checkpoint,
 )
 from birddou.eval.baselines import LongestMovePolicy, SeededRandomPolicy
 from birddou.features import FeatureConfig
@@ -29,7 +31,7 @@ from birddou.models.belief_bird_dou import (
     BeliefBirdDouConfig,
     BeliefBirdDouModel,
 )
-from birddou.models.bird_dou import BirdDouConfig
+from birddou.models.bird_dou import BirdDouConfig, BirdDouModel
 from birddou.models.history_encoder import HistoryEncoderConfig
 from birddou.models.rank_mixer import RankMixerConfig
 
@@ -151,6 +153,36 @@ def test_frozen_offline_pretrain_then_joint_unfreeze(tmp_path: Path) -> None:
     dataset = small_dataset()
     subset = dataset.select(torch.arange(min(8, dataset.state_count), dtype=torch.int64))
     model = BeliefBirdDouModel(tiny_config())
+    base = BirdDouModel(tiny_config().base)
+    base_path = tmp_path / "base.pt"
+    feature_fingerprint = "a" * 64
+    rules_hash = "b" * 64
+    torch.save(
+        {
+            "trainer_mode": "bird_dou_dmc",
+            "model_fingerprint": tiny_config().base.fingerprint(),
+            "feature_fingerprint": feature_fingerprint,
+            "rules_hash": rules_hash,
+            "state": {"policy_version": 7},
+            "model": base.state_dict(),
+        },
+        base_path,
+    )
+    identity = BeliefBaseCheckpointIdentity(
+        path=base_path,
+        sha256=hashlib.sha256(base_path.read_bytes()).hexdigest(),
+        policy_version=7,
+        model_fingerprint=tiny_config().base.fingerprint(),
+        feature_fingerprint=feature_fingerprint,
+        rules_hash=rules_hash,
+    )
+    warm_start = warm_start_belief_from_base_checkpoint(
+        model,
+        subset.batch,
+        identity,
+    )
+    assert warm_start.policy_logit_exact and warm_start.mc_q_exact
+    assert warm_start.belief_scale == 0.0
     public_before = {
         key: value.detach().clone()
         for key, value in model.base.rank_token_encoder.state_dict().items()
@@ -167,6 +199,7 @@ def test_frozen_offline_pretrain_then_joint_unfreeze(tmp_path: Path) -> None:
             weight_decay=0.0,
             freeze_public_encoder=True,
         ),
+        warm_start=warm_start,
     )
     result = trainer.train(subset, tmp_path / "belief-pretrain.pt")
     assert result.update_count == 2
@@ -181,7 +214,12 @@ def test_frozen_offline_pretrain_then_joint_unfreeze(tmp_path: Path) -> None:
         for key, value in scorer_before.items()
     )
 
-    joint_losses = trainer.joint_finetune(subset, epochs=1, belief_coefficient=0.2)
+    checkpoint = torch.load(tmp_path / "belief-pretrain.pt", weights_only=True)
+    assert checkpoint["base_warm_start"]["base"]["policy_version"] == 7
+
+    joint_losses = trainer.behavior_anchored_belief_finetune(
+        subset, epochs=1, belief_coefficient=0.2
+    )
     assert len(joint_losses) == 2 and all(np.isfinite(joint_losses))
     assert model.base.rank_token_encoder.projection.weight.grad is not None
     assert model.belief_scores.network[0].weight.grad is not None
@@ -189,4 +227,21 @@ def test_frozen_offline_pretrain_then_joint_unfreeze(tmp_path: Path) -> None:
 
 def test_joint_loss_rejects_invalid_coefficient() -> None:
     with np.testing.assert_raises_regex(ValueError, "coefficient"):
-        joint_belief_policy_loss(torch.tensor(1.0), torch.tensor(2.0), -0.1)
+        behavior_anchored_belief_loss(torch.tensor(1.0), torch.tensor(2.0), -0.1)
+
+
+def test_belief_warm_start_rejects_unpinned_checkpoint(tmp_path: Path) -> None:
+    dataset = small_dataset().select(torch.tensor([0], dtype=torch.int64))
+    model = BeliefBirdDouModel(tiny_config())
+    path = tmp_path / "base.pt"
+    torch.save({}, path)
+    identity = BeliefBaseCheckpointIdentity(
+        path=path,
+        sha256="0" * 64,
+        policy_version=0,
+        model_fingerprint=tiny_config().base.fingerprint(),
+        feature_fingerprint="1" * 64,
+        rules_hash="2" * 64,
+    )
+    with np.testing.assert_raises_regex(RuntimeError, "SHA-256"):
+        warm_start_belief_from_base_checkpoint(model, dataset.batch, identity)

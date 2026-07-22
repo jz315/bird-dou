@@ -19,6 +19,7 @@ def test_web_game_exposes_only_information_safe_state() -> None:
     assert isinstance(cards_left, list) and len(cards_left) == 3
     assert "hands" not in state
     assert "unknownPool" not in state
+    assert "seed" not in state
 
 
 def test_human_can_drive_a_complete_browser_game() -> None:

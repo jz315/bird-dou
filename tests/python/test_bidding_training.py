@@ -157,14 +157,21 @@ def test_mc_initialization_branches_every_bid_and_fits_outcome_heads() -> None:
 
 def test_curriculum_monitor_calibration_and_acceptance_are_metric_gated() -> None:
     threshold = CurriculumThresholds(0.1, 0.1, 0.95, 0.35, 10)
-    curriculum = WinScoreCurriculum(threshold, score_weight=0.25)
+    curriculum = WinScoreCurriculum(
+        threshold,
+        score_loss_coef=0.25,
+        utility_score_coef=0.5,
+    )
     assert curriculum.state.cardplay_frozen
     assert not curriculum.maybe_advance(CurriculumMetrics(9, 0.01, 0.5, 0.1))
     metrics = CurriculumMetrics(10, 0.05, 0.5, 0.1)
     assert curriculum.maybe_advance(metrics)
-    assert not curriculum.state.cardplay_frozen and curriculum.state.score_weight == 0.0
+    assert not curriculum.state.cardplay_frozen
+    assert curriculum.state.score_loss_coef == 0.0
+    assert curriculum.state.utility_score_coef == 0.0
     assert curriculum.maybe_advance(metrics)
-    assert curriculum.state.score_weight == pytest.approx(0.25)
+    assert curriculum.state.score_loss_coef == pytest.approx(0.25)
+    assert curriculum.state.utility_score_coef == pytest.approx(0.5)
 
     monitor = BiddingDistributionMonitor(20)
     for index in range(12):
@@ -188,6 +195,34 @@ def test_curriculum_monitor_calibration_and_acceptance_are_metric_gated() -> Non
     rejected = evaluate_bidding_acceptance(report, report, 0.05, 0.0, gates)
     assert accepted.accepted
     assert not rejected.accepted and not rejected.beats_fixed_bidder
+
+
+def test_rob_mode_monitor_does_not_apply_score_bucket_degeneracy() -> None:
+    monitor = BiddingDistributionMonitor(20)
+    for index in range(10):
+        monitor.add(
+            BiddingEpisodeSummary(
+                landlord_strength=0.5,
+                winning_bid=1,
+                redeal_count=0,
+                bid_action_count=3,
+                positive_bid_count=1 + index % 2,
+                landlord_won=index % 2 == 0,
+                landlord_score=2.0 if index % 2 == 0 else -2.0,
+                bidding_mode="rob",
+                call_count=1,
+                rob_count=index % 2,
+                landlord_change_count=index % 2,
+            )
+        )
+    report = monitor.report(0.1, 0.95)
+    assert report.bidding_mode == "rob"
+    assert report.bid_ratio == (1.0, 0.0, 0.0)
+    assert not report.degenerate
+    assert report.call_action_rate == pytest.approx(1 / 3)
+    assert report.rob_action_rate == pytest.approx(1 / 6)
+    assert report.mean_rob_count == pytest.approx(0.5)
+    assert report.mean_landlord_changes == pytest.approx(0.5)
 
 
 def test_complete_scoring_arena_runs_fixed_bidder_cardplay_composition() -> None:
@@ -237,7 +272,11 @@ def test_complete_collector_attaches_one_terminal_return_to_both_stages() -> Non
         joint_batch.batch.action_offsets,
         config.loss,
     )
-    curriculum = WinScoreCurriculum(config.curriculum, config.loss.score_weight)
+    curriculum = WinScoreCurriculum(
+        config.curriculum,
+        config.loss.score_loss_coef,
+        config.loss.utility_score_coef,
+    )
     cardplay_loss = torch.tensor(2.0, requires_grad=True)
     frozen = combine_joint_training_loss(bid_loss, cardplay_loss, curriculum.state)
     set_cardplay_frozen(model, curriculum.state.cardplay_frozen)
@@ -262,13 +301,25 @@ def test_bid_head_policy_adapter_uses_only_bidding_boundary() -> None:
     environment = PyDdzEnv()
     observation = environment.reset(99, rules)
     actions = tuple(environment.legal_actions())
-    policy = BidHeadPolicy("learned-bid", _small_model(), rules)
+    model = _small_model()
+    policy = BidHeadPolicy("learned-bid", model, rules)
+    model.train()
     selected = policy.select_action(
         observation,
         actions,
         PolicyDecisionContext(0, 99, "bid-policy", observation["observer"], None, 0),
     )
     assert 0 <= selected < len(actions)
+    assert not model.training
+
+    for parameter in model.outcome_head[-1].parameters():
+        parameter.data[:] = torch.nan
+    with pytest.raises(RuntimeError, match="non-finite mc_q"):
+        policy.select_action(
+            observation,
+            actions,
+            PolicyDecisionContext(0, 99, "bad-bid-policy", observation["observer"], None, 0),
+        )
 
 
 def test_joint_bid_loss_is_selected_action_dmc_with_per_state_entropy() -> None:
@@ -282,7 +333,7 @@ def test_joint_bid_loss_is_selected_action_dmc_with_per_state_entropy() -> None:
     legal = (tuple(first.legal_actions()), tuple(second.legal_actions()))
     batch = encode_bid_batch(observations, legal, rules)
     output = _small_model()(batch)
-    config = replace(load_bidding_training_config(TRAIN_PATH).loss, entropy_weight=0.0)
+    config = replace(load_bidding_training_config(TRAIN_PATH).loss, entropy_coef=0.0)
     chosen = batch.action_offsets[:-1]
     targets_win = torch.tensor([1.0, 0.0])
     targets_score = torch.tensor([2.0, -2.0])
@@ -300,7 +351,7 @@ def test_joint_bid_loss_is_selected_action_dmc_with_per_state_entropy() -> None:
     assert torch.count_nonzero(gradient[non_chosen]) == 0
     assert torch.count_nonzero(gradient[chosen]) == chosen.numel()
 
-    entropy_config = replace(config, entropy_weight=0.001)
+    entropy_config = replace(config, entropy_coef=0.001)
     entropy_loss = joint_bid_loss(
         output,
         chosen,
@@ -322,7 +373,8 @@ def test_joint_bid_loss_is_selected_action_dmc_with_per_state_entropy() -> None:
 
 def test_training_config_rejects_invalid_loss_switches() -> None:
     config = load_bidding_training_config(TRAIN_PATH)
-    assert config.schema_version == 2
+    assert config.schema_version == 3
     assert config.collection_epsilon == pytest.approx(0.05)
+    assert config.loss.entropy_coef == 0.0
     with pytest.raises(ValueError, match="weights"):
-        BidLossConfig(-1.0, 1.0, 0.0, 1.0, 16.0, 0.0)
+        BidLossConfig(-1.0, 1.0, 0.0, 0.0, 1.0, 16.0, 0.0)

@@ -150,8 +150,11 @@ mechanics. Full-game collection then retains both bidding and card-play decision
 under the same terminal return. Bid collection is reproducible epsilon-greedy
 MC-Q, and joint learning regresses selected Q/win/score outcomes without a
 REINFORCE term. The curriculum unfreezes Cardplay only after
-completed-game, calibration, call-rate, and redeal gates pass; score loss is enabled
-in a later gated stage. Configuration, monitoring, and the empirical claim boundary
+completed-game, calibration, call-rate, and redeal gates pass. MC pretraining and
+the first two stages use a pure win/loss Q target; separate score-head loss and
+score-utility coefficients are enabled only in the later gated stage. Q entropy is
+zero by default. Score and rob modes use separate non-degeneration statistics.
+Configuration, monitoring, and the empirical claim boundary
 are documented in [`BIDDING.md`](BIDDING.md).
 
 The executable smoke/resume path is:
@@ -162,7 +165,10 @@ bash scripts/train_full_game.sh
 
 It checkpoints Bid Head, Cardplay, optimizer, scheduler, AMP scaler, RNGs, policy
 version, curriculum stage, bidding calibration window, MC pretraining progress,
-and the League snapshot. `bid_pretraining_metrics.jsonl` records every resumable
+parsed bidding/Cardplay training-config fingerprints, and the League snapshot.
+Filesystem locator strings are excluded from semantic fingerprints, so moving a
+run does not invalidate it while editing referenced config content does.
+`bid_pretraining_metrics.jsonl` records every resumable
 privileged-label update separately from complete-game `metrics.jsonl`.
 
 Mixed precision permits FP16/BF16 network activations but retains FP32 CRF dynamic

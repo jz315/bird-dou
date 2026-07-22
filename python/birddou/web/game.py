@@ -200,7 +200,6 @@ class GameSession:
         return {
             "schemaVersion": 1,
             "gameId": self.game_id,
-            "seed": self.seed,
             "humanSeat": self.human_seat,
             "aiMode": self.ai_mode,
             "phase": observation["phase"],

@@ -1,17 +1,18 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "collection_epsilon": 0.05,
   "monte_carlo": {
     "max_actions": 1000,
     "all_pass_win_target": 0.5
   },
   "loss": {
-    "q_weight": 1.0,
-    "win_weight": 1.0,
-    "score_weight": 0.25,
+    "q_loss_coef": 1.0,
+    "win_loss_coef": 1.0,
+    "score_loss_coef": 0.25,
+    "utility_score_coef": 0.25,
     "policy_temperature": 0.25,
     "score_scale": 16.0,
-    "entropy_weight": 0.001
+    "entropy_coef": 0.0
   },
   "curriculum": {
     "max_calibration_error": 0.08,

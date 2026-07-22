@@ -24,7 +24,7 @@ from birddou.eval.paired_deals import role_for_game_seat, splitmix64
 from birddou.models.bid_head import BidBatch, BidHead, BidHeadOutput, encode_bid_batch
 from birddou.models.segment_ops import segment_softmax, segment_sum
 
-BIDDING_TRAINING_SCHEMA_VERSION = 2
+BIDDING_TRAINING_SCHEMA_VERSION = 3
 
 
 class BiddingStage(StrEnum):
@@ -53,15 +53,22 @@ class MonteCarloConfig:
 class BidLossConfig:
     """Weights for all-action MC supervision and selected-action DMC learning."""
 
-    q_weight: float
-    win_weight: float
-    score_weight: float
+    q_loss_coef: float
+    win_loss_coef: float
+    score_loss_coef: float
+    utility_score_coef: float
     policy_temperature: float
     score_scale: float
-    entropy_weight: float
+    entropy_coef: float
 
     def __post_init__(self) -> None:
-        weights = (self.q_weight, self.win_weight, self.score_weight, self.entropy_weight)
+        weights = (
+            self.q_loss_coef,
+            self.win_loss_coef,
+            self.score_loss_coef,
+            self.utility_score_coef,
+            self.entropy_coef,
+        )
         if any(not math.isfinite(value) or value < 0.0 for value in weights):
             raise ValueError("Bid loss weights must be finite and non-negative")
         if self.policy_temperature <= 0.0 or self.score_scale <= 0.0:
@@ -275,6 +282,10 @@ class BiddingEpisodeSummary:
     positive_bid_count: int
     landlord_won: bool
     landlord_score: float
+    bidding_mode: str = "score"
+    call_count: int = 0
+    rob_count: int = 0
+    landlord_change_count: int = 0
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.landlord_strength) or not math.isfinite(self.landlord_score):
@@ -283,6 +294,15 @@ class BiddingEpisodeSummary:
             raise ValueError("winning bid/redeal count is invalid")
         if self.bid_action_count <= 0 or not 0 <= self.positive_bid_count <= self.bid_action_count:
             raise ValueError("bidding action counts are invalid")
+        if self.bidding_mode not in ("score", "rob"):
+            raise ValueError("bidding summary mode must be score or rob")
+        if any(
+            value < 0
+            for value in (self.call_count, self.rob_count, self.landlord_change_count)
+        ):
+            raise ValueError("rob-mode bidding counts must be non-negative")
+        if self.call_count + self.rob_count > self.positive_bid_count:
+            raise ValueError("call/rob counts exceed positive bidding actions")
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,6 +318,12 @@ class BiddingDistributionReport:
     win_rate_by_bid: tuple[float, float, float]
     mean_score_by_bid: tuple[float, float, float]
     degenerate: bool
+    bidding_mode: str = "score"
+    pass_action_rate: float = 0.0
+    call_action_rate: float = 0.0
+    rob_action_rate: float = 0.0
+    mean_rob_count: float = 0.0
+    mean_landlord_changes: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,8 +342,8 @@ class CurriculumState:
 
     stage: BiddingStage
     cardplay_frozen: bool
-    win_weight: float
-    score_weight: float
+    score_loss_coef: float
+    utility_score_coef: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,12 +394,13 @@ def load_bidding_training_config(path: Path) -> BiddingTrainingConfig:
             all_pass_win_target=_number(monte_carlo, "all_pass_win_target"),
         ),
         loss=BidLossConfig(
-            q_weight=_number(loss, "q_weight"),
-            win_weight=_number(loss, "win_weight"),
-            score_weight=_number(loss, "score_weight"),
+            q_loss_coef=_number(loss, "q_loss_coef"),
+            win_loss_coef=_number(loss, "win_loss_coef"),
+            score_loss_coef=_number(loss, "score_loss_coef"),
+            utility_score_coef=_number(loss, "utility_score_coef"),
             policy_temperature=_number(loss, "policy_temperature"),
             score_scale=_number(loss, "score_scale"),
-            entropy_weight=_number(loss, "entropy_weight"),
+            entropy_coef=_number(loss, "entropy_coef"),
         ),
         curriculum=CurriculumThresholds(
             max_calibration_error=_number(curriculum, "max_calibration_error"),
@@ -521,7 +548,17 @@ class BidHeadPolicy:
             history_max_length=self._model.config.history_max_length,
         ).to(self._device)
         with torch.inference_mode():
-            output = self._model(batch)
+            self._model.eval()
+            try:
+                output = self._model(batch)
+            except ValueError as error:
+                if "NaN or infinity" in str(error) or "non-finite" in str(error):
+                    raise RuntimeError("BidHeadPolicy rejected non-finite mc_q") from error
+                raise
+        if output.mc_q.shape != (len(legal_actions),):
+            raise RuntimeError("BidHeadPolicy mc_q shape differs from legal action count")
+        if not torch.isfinite(output.mc_q).all():
+            raise RuntimeError("BidHeadPolicy rejected non-finite mc_q")
         greedy = int(torch.argmax(output.mc_q).item())
         if len(legal_actions) <= 1 or self._epsilon == 0.0:
             return greedy
@@ -707,10 +744,10 @@ def bid_supervised_loss(
     log_probability = torch.log(probability.clamp_min(torch.finfo(torch.float32).tiny))
     entropy = -segment_sum(probability * log_probability, action_offsets).mean()
     total = (
-        config.q_weight * q
-        + config.win_weight * win
-        + config.score_weight * score
-        - config.entropy_weight * entropy
+        config.q_loss_coef * q
+        + config.win_loss_coef * win
+        + config.score_loss_coef * score
+        - config.entropy_coef * entropy
     )
     return BidLossOutput(total, q, win, score, entropy)
 
@@ -749,10 +786,10 @@ def joint_bid_loss(
     log_probability = torch.log(probability.clamp_min(torch.finfo(torch.float32).tiny))
     entropy = -segment_sum(probability * log_probability, action_offsets).mean()
     total = (
-        config.q_weight * q
-        + config.win_weight * win
-        + config.score_weight * score
-        - config.entropy_weight * entropy
+        config.q_loss_coef * q
+        + config.win_loss_coef * win
+        + config.score_loss_coef * score
+        - config.entropy_coef * entropy
     )
     return BidLossOutput(total, q, win, score, entropy)
 
@@ -763,17 +800,30 @@ def _terminal_bid_utility(
     config: BidLossConfig,
 ) -> Tensor:
     """Center win/loss outcomes and add the configured normalized score utility."""
-    return 2.0 * win_target - 1.0 + config.score_weight * score_target / config.score_scale
+    return (
+        2.0 * win_target
+        - 1.0
+        + config.utility_score_coef * score_target / config.score_scale
+    )
 
 
 class WinScoreCurriculum:
     """Advance only after observed calibration and non-degeneration gates pass."""
 
-    def __init__(self, thresholds: CurriculumThresholds, score_weight: float) -> None:
-        if score_weight < 0.0 or not math.isfinite(score_weight):
-            raise ValueError("curriculum score weight must be finite and non-negative")
+    def __init__(
+        self,
+        thresholds: CurriculumThresholds,
+        score_loss_coef: float,
+        utility_score_coef: float,
+    ) -> None:
+        if any(
+            value < 0.0 or not math.isfinite(value)
+            for value in (score_loss_coef, utility_score_coef)
+        ):
+            raise ValueError("curriculum score coefficients must be finite and non-negative")
         self.thresholds = thresholds
-        self._score_weight = score_weight
+        self._score_loss_coef = score_loss_coef
+        self._utility_score_coef = utility_score_coef
         self._stage = BiddingStage.BID_WIN_FROZEN
 
     @property
@@ -782,8 +832,14 @@ class WinScoreCurriculum:
         return CurriculumState(
             stage=self._stage,
             cardplay_frozen=self._stage is BiddingStage.BID_WIN_FROZEN,
-            win_weight=1.0,
-            score_weight=self._score_weight if self._stage is BiddingStage.JOINT_SCORE else 0.0,
+            score_loss_coef=(
+                self._score_loss_coef if self._stage is BiddingStage.JOINT_SCORE else 0.0
+            ),
+            utility_score_coef=(
+                self._utility_score_coef
+                if self._stage is BiddingStage.JOINT_SCORE
+                else 0.0
+            ),
         )
 
     def maybe_advance(self, metrics: CurriculumMetrics) -> bool:
@@ -829,6 +885,10 @@ class BiddingDistributionMonitor:
         if not 0.0 <= min_call_rate < max_call_rate <= 1.0:
             raise ValueError("monitor call-rate interval is invalid")
         rows = tuple(self._rows)
+        modes = {row.bidding_mode for row in rows}
+        if len(modes) != 1:
+            raise ValueError("bidding monitor cannot mix score and rob mode rows")
+        bidding_mode = next(iter(modes))
         strengths = [row.landlord_strength for row in rows]
         mean_strength = sum(strengths) / len(strengths)
         variance = sum((value - mean_strength) ** 2 for value in strengths) / len(strengths)
@@ -844,13 +904,20 @@ class BiddingDistributionMonitor:
             score_by_bid.append(
                 0.0 if count == 0 else sum(row.landlord_score for row in bucket) / count
             )
-        call_rate = sum(row.positive_bid_count for row in rows) / sum(
-            row.bid_action_count for row in rows
-        )
+        total_actions = sum(row.bid_action_count for row in rows)
+        total_positive = sum(row.positive_bid_count for row in rows)
+        call_rate = total_positive / total_actions
+        pass_action_rate = (total_actions - total_positive) / total_actions
+        call_action_rate = sum(row.call_count for row in rows) / total_actions
+        rob_action_rate = sum(row.rob_count for row in rows) / total_actions
+        mean_rob_count = sum(row.rob_count for row in rows) / len(rows)
+        mean_landlord_changes = sum(row.landlord_change_count for row in rows) / len(rows)
         redeal_rate = sum(row.redeal_count for row in rows) / (
             len(rows) + sum(row.redeal_count for row in rows)
         )
-        degenerate = not min_call_rate <= call_rate <= max_call_rate or max(bid_ratio) >= 0.99
+        degenerate = not min_call_rate <= call_rate <= max_call_rate or (
+            bidding_mode == "score" and max(bid_ratio) >= 0.99
+        )
         return BiddingDistributionReport(
             game_count=len(rows),
             landlord_strength_mean=mean_strength,
@@ -861,6 +928,12 @@ class BiddingDistributionMonitor:
             win_rate_by_bid=cast(tuple[float, float, float], tuple(win_by_bid)),
             mean_score_by_bid=cast(tuple[float, float, float], tuple(score_by_bid)),
             degenerate=degenerate,
+            bidding_mode=bidding_mode,
+            pass_action_rate=pass_action_rate,
+            call_action_rate=call_action_rate,
+            rob_action_rate=rob_action_rate,
+            mean_rob_count=mean_rob_count,
+            mean_landlord_changes=mean_landlord_changes,
         )
 
 

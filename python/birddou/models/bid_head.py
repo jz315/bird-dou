@@ -319,6 +319,7 @@ class BidHead(nn.Module):
             batch_first=True,
             dropout=config.dropout if config.history_layers > 1 else 0.0,
         )
+        self.empty_history = nn.Parameter(torch.zeros(width))
         self.seat_embedding = nn.Embedding(3, width)
         self.rule_mode_embedding = nn.Embedding(2, width)
         self.rule_projection = nn.Linear(4, width)
@@ -361,8 +362,22 @@ class BidHead(nn.Module):
             batch.history_action
         ) + self.history_actor_embedding(batch.history_actor)
         history_tokens = history_tokens * batch.history_mask.unsqueeze(-1)
-        _, hidden = self.history_encoder(history_tokens)
-        history_state = hidden[-1]
+        history_length = batch.history_mask.sum(dim=1)
+        expected_mask = (
+            torch.arange(batch.history_mask.shape[1], device=batch.history_mask.device)[None, :]
+            < history_length[:, None]
+        )
+        if not torch.equal(batch.history_mask, expected_mask):
+            raise ValueError("Bid Head history_mask must be a contiguous valid prefix")
+        history_state = self.empty_history[None].expand(batch.batch_size, -1)
+        for length in torch.unique(history_length).tolist():
+            if length == 0:
+                continue
+            indices = torch.nonzero(history_length == length, as_tuple=False).squeeze(-1)
+            encoded, _ = self.history_encoder(
+                history_tokens.index_select(0, indices)[:, :length]
+            )
+            history_state = history_state.index_copy(0, indices, encoded[:, -1])
         public_state = self.public_fusion(
             torch.cat(
                 (

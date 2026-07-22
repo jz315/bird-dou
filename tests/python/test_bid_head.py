@@ -111,3 +111,24 @@ def test_bid_head_cpu_bfloat16_autocast_preserves_fp32_crf_and_softmax() -> None
         parameter.grad is None or torch.isfinite(parameter.grad).all()
         for parameter in model.parameters()
     )
+
+
+@pytest.mark.parametrize("history_events", [0, 1, 2])
+def test_bid_history_state_is_invariant_to_right_padding(history_events: int) -> None:
+    rules = _rules()
+    environment = PyDdzEnv()
+    observation = environment.reset(800 + history_events, rules)
+    for _ in range(history_events):
+        environment.step(environment.legal_actions()[0])
+        observation = environment.observe(environment.current_player)
+    actions = tuple(environment.legal_actions())
+    short = encode_bid_batch(
+        (observation,), (actions,), rules, history_max_length=max(3, history_events)
+    )
+    long = encode_bid_batch((observation,), (actions,), rules, history_max_length=6)
+    model = BidHead(_small_config()).eval()
+    with torch.inference_mode():
+        short_output = model(short)
+        long_output = model(long)
+    torch.testing.assert_close(short_output.state, long_output.state, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(short_output.mc_q, long_output.mc_q, rtol=0.0, atol=0.0)

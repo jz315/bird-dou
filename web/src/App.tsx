@@ -155,7 +155,7 @@ function App() {
             <strong>对局信息</strong>
           </div>
           <dl className="match-facts">
-            <div><dt>局号</dt><dd>#{game ? String(game.seed).slice(-6) : "------"}</dd></div>
+            <div><dt>局号</dt><dd>#{game ? game.gameId.slice(-6) : "------"}</dd></div>
             <div><dt>炸弹</dt><dd>{game?.bombCount ?? 0}</dd></div>
             <div><dt>身份</dt><dd>{game ? roleLabel(game, game.humanSeat) : "—"}</dd></div>
           </dl>

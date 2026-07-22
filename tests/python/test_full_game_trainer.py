@@ -128,6 +128,8 @@ def test_full_game_trainer_updates_checkpoints_and_resumes(tmp_path: Path) -> No
     assert manifest["model_arch_version"] == ("bird_dou_bid_head_v2+bird_dou_no_belief_v1")
     assert manifest["bid_model_fingerprint"]
     assert manifest["cardplay_model_fingerprint"]
+    assert manifest["bidding_training_fingerprint"]
+    assert manifest["cardplay_training_fingerprint"]
     assert manifest["continuation_policy_hash"]
     assert manifest["continuation_model_architecture"] == "longest_move_smoke_only"
     assert manifest["continuation_decision_mode"] == "longest_move"
@@ -136,13 +138,23 @@ def test_full_game_trainer_updates_checkpoints_and_resumes(tmp_path: Path) -> No
         "bidding",
         "doubling",
         "cardplay",
+        "bidding_training_fingerprint",
+        "cardplay_training_fingerprint",
     }
     assert manifest["optimizer_state"]
     assert manifest["rng_state"]
     checkpoint = torch.load(tmp_path / "checkpoint.pt", weights_only=True)
     assert checkpoint["league_snapshot"]["schedule_cursor"] == 1
+    assert checkpoint["bidding_training_fingerprint"] == manifest[
+        "bidding_training_fingerprint"
+    ]
+    assert checkpoint["cardplay_training_fingerprint"] == manifest[
+        "cardplay_training_fingerprint"
+    ]
     assert len(checkpoint["pretraining_history"]) == 1
     assert checkpoint["pretraining_history"][0]["continuation_policy_hash"]
+    assert checkpoint["pretraining_history"][0]["bidding_training_fingerprint"]
+    assert checkpoint["pretraining_history"][0]["cardplay_training_fingerprint"]
 
     del first
     gc.collect()
@@ -167,6 +179,18 @@ def test_full_game_trainer_updates_checkpoints_and_resumes(tmp_path: Path) -> No
     assert resumed_result.state.bid_pretraining_updates == 1
     assert resumed_result.state.policy_version == 3
     assert len(resumed_result.metrics_history) == 2
+    del resumed
+    gc.collect()
+
+    changed_bidding = tmp_path / "changed-bidding.json"
+    changed_payload = json.loads(first_config.bidding_training_path.read_text(encoding="utf-8"))
+    changed_payload["collection_epsilon"] = 0.06
+    changed_bidding.write_text(json.dumps(changed_payload), encoding="utf-8")
+    changed = FullGameTrainer(
+        replace(first_config, episodes=2, bidding_training_path=changed_bidding)
+    )
+    with pytest.raises(FullGameTrainingError, match="bidding_training_fingerprint"):
+        changed.load_checkpoint()
 
 
 def test_full_game_loads_verified_cardplay_and_reuses_it_as_continuation(
@@ -204,11 +228,26 @@ def test_full_game_loads_verified_cardplay_and_reuses_it_as_continuation(
     assert result.state.learner_updates == 1
     provenance = trainer.pretraining_history[0]["mc_continuation_provenance"]
     assert isinstance(provenance, dict)
-    assert set(provenance) == {"composite_policy_id", "bidding", "doubling", "cardplay"}
+    assert set(provenance) == {
+        "composite_policy_id",
+        "bidding",
+        "doubling",
+        "cardplay",
+        "bidding_training_fingerprint",
+        "cardplay_training_fingerprint",
+    }
     assert (
         config.fingerprint()
         == replace(
-            config, cardplay_checkpoint_path=tmp_path / "relocated-cardplay.pt"
+            config,
+            rules_path=tmp_path / "rules.json",
+            bid_model_path=tmp_path / "bid-model.json",
+            cardplay_model_path=tmp_path / "cardplay-model.json",
+            feature_path=tmp_path / "features.json",
+            bidding_training_path=tmp_path / "bidding.json",
+            cardplay_training_path=tmp_path / "cardplay-training.json",
+            cardplay_checkpoint_path=tmp_path / "relocated-cardplay.pt",
+            output_directory=tmp_path / "relocated-output",
         ).fingerprint()
     )
 

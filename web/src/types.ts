@@ -29,7 +29,6 @@ export interface GameResult {
 export interface GameState {
   schemaVersion: number;
   gameId: string;
-  seed: number;
   humanSeat: number;
   aiMode: string;
   phase: Phase;

@@ -93,7 +93,11 @@ epsilon-greedily with a context-derived reproducible exploration draw. The selec
 action's MC-Q, win, and score heads regress the terminal outcome. There is no
 REINFORCE term, action-dependent baseline, behavior-policy assumption, or hidden
 off-policy correction. MC initialization supervises all legal candidates. Entropy
-is computed as a segment sum per information set and then averaged across states.
+is reported as a segment diagnostic, but its DMC coefficient defaults to zero:
+epsilon-greedy supplies exploration without biasing calibrated terminal-return Q.
+The loss configuration separates `q_loss_coef`, `win_loss_coef`,
+`score_loss_coef`, `utility_score_coef`, and `entropy_coef`, so score-head
+supervision cannot silently change the definition of the Q target.
 
 Under autocast, matrix-heavy network layers may use FP16/BF16 while constrained CRF
 dynamic programs, RMS variance accumulation, probability normalization, and loss
@@ -103,17 +107,20 @@ suite when CUDA is available.
 
 The metric-gated curriculum has three stages:
 
-1. `bid_win_frozen`: Cardplay frozen, win-first Bid Head initialization;
-2. `joint_win`: Bid and Cardplay train together, score weight still zero;
-3. `joint_score`: configured terminal score loss is enabled.
+1. `bid_win_frozen`: Cardplay frozen, pure win/loss Q and zero score loss;
+2. `joint_win`: Bid and Cardplay train together with the same pure-win Q target;
+3. `joint_score`: configured score loss and normalized score utility are enabled.
 
 No stage advances by step count alone. Completed-game count, calibration error,
 call rate, and redeal rate must all pass configured gates.
 
 ## Evaluation and claim boundary
 
-The windowed monitor reports landlord strength mean/std, bids 1/2/3 ratio, positive
-bid rate, redeal rate, and win/mean score conditioned on winning bid. The formal
+For score bidding, the windowed monitor reports landlord strength mean/std, bids
+1/2/3 ratio, positive-bid rate, redeal rate, and win/mean score conditioned on
+winning bid. Rob bidding instead records pass/call/rob action rates, mean rob count,
+and mean landlord-candidate changes; it never applies the impossible 1/2/3-score
+bucket degeneration gate to rob games. The formal
 acceptance function additionally requires:
 
 - non-degenerate bidding;

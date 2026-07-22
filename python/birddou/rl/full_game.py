@@ -67,7 +67,7 @@ from birddou.rl.bird_dou_dmc import (
 )
 
 FULL_GAME_CONFIG_SCHEMA_VERSION = 4
-FULL_GAME_CHECKPOINT_SCHEMA_VERSION = 5
+FULL_GAME_CHECKPOINT_SCHEMA_VERSION = 6
 
 
 class FullGameTrainingError(RuntimeError):
@@ -170,9 +170,18 @@ class FullGameConfig:
 
     def fingerprint(self) -> str:
         payload = self.to_dict()
-        del payload["episodes"]
-        del payload["output_directory"]
-        del payload["cardplay_checkpoint_path"]
+        for key in (
+            "rules_path",
+            "bid_model_path",
+            "cardplay_model_path",
+            "feature_path",
+            "bidding_training_path",
+            "cardplay_training_path",
+            "cardplay_checkpoint_path",
+            "output_directory",
+            "episodes",
+        ):
+            del payload[key]
         return _stable_hash(payload)
 
 
@@ -257,6 +266,11 @@ class FullGameTrainer:
         self.cardplay_training: BirdDouDmcConfig = load_bird_dou_dmc_config(
             config.cardplay_training_path
         )
+        self.bidding_training_fingerprint = _stable_hash(asdict(self.bidding_config))
+        self.cardplay_training_fingerprint = _parsed_training_fingerprint(
+            self.cardplay_training,
+            ("rules_path", "model_path", "feature_path", "output_directory"),
+        )
         self.feature_config: FeatureConfig = replace(
             load_feature_config(config.feature_path),
             decomposition_features=config.decomposition_features,
@@ -315,6 +329,8 @@ class FullGameTrainer:
                 "policy_hash": self.continuation_policy_hash,
                 "policy_version": self.continuation_policy_version,
             },
+            "bidding_training_fingerprint": self.bidding_training_fingerprint,
+            "cardplay_training_fingerprint": self.cardplay_training_fingerprint,
         }
         self.continuation_model_architecture = (
             "longest_move_smoke_only"
@@ -336,7 +352,8 @@ class FullGameTrainer:
         self.scaler = torch.amp.GradScaler("cuda", enabled=config.amp)
         self.curriculum = WinScoreCurriculum(
             self.bidding_config.curriculum,
-            self.bidding_config.loss.score_weight,
+            self.bidding_config.loss.score_loss_coef,
+            self.bidding_config.loss.utility_score_coef,
         )
         self.monitor = BiddingDistributionMonitor(
             max(100_000, self.bidding_config.curriculum.min_complete_games)
@@ -418,6 +435,8 @@ class FullGameTrainer:
                     "call_rate": distribution.call_rate,
                     "redeal_rate": distribution.redeal_rate,
                     "losses": dict(self.losses),
+                    "bidding_training_fingerprint": self.bidding_training_fingerprint,
+                    "cardplay_training_fingerprint": self.cardplay_training_fingerprint,
                 }
             )
             if self.state.episodes % self.config.checkpoint_every == 0:
@@ -473,7 +492,11 @@ class FullGameTrainer:
                     output,
                     labels,
                     batch.action_offsets,
-                    self.bidding_config.loss,
+                    replace(
+                        self.bidding_config.loss,
+                        score_loss_coef=0.0,
+                        utility_score_coef=0.0,
+                    ),
                 )
             if not torch.isfinite(loss.total):
                 raise FullGameTrainingError("Bid Head MC pretraining loss is non-finite")
@@ -514,6 +537,8 @@ class FullGameTrainer:
                     "continuation_decision_mode": self.continuation_decision_mode,
                     "mc_continuation_provenance": self.mc_continuation_provenance,
                     "rules_hash": self.rules_hash,
+                    "bidding_training_fingerprint": self.bidding_training_fingerprint,
+                    "cardplay_training_fingerprint": self.cardplay_training_fingerprint,
                     "loss": self.losses["bid"],
                 }
             )
@@ -627,7 +652,8 @@ class FullGameTrainer:
             bid_output = self.bid_model(bid_batch)
             stage_loss = replace(
                 self.bidding_config.loss,
-                score_weight=self.curriculum.state.score_weight,
+                score_loss_coef=self.curriculum.state.score_loss_coef,
+                utility_score_coef=self.curriculum.state.utility_score_coef,
             )
             bid_loss = joint_bid_loss(
                 bid_output,
@@ -734,10 +760,14 @@ class FullGameTrainer:
         if episode.landlord is None:
             raise FullGameTrainingError("resolved full-game episode has no landlord")
         positive = 0
+        call_count = 0
+        rob_count = 0
         for decision in episode.bidding:
             action = decision.legal_actions[decision.selected_index]
             bid = action.get("bid")
             positive += int(bid != "pass")
+            call_count += int(bid == "call")
+            rob_count += int(bid == "rob")
         payoff = episode.terminal_payoff[episode.landlord]
         return BiddingEpisodeSummary(
             landlord_strength=episode.landlord_strength,
@@ -747,6 +777,10 @@ class FullGameTrainer:
             positive_bid_count=positive,
             landlord_won=payoff > 0,
             landlord_score=float(payoff),
+            bidding_mode=self.rules["bidding"]["mode"],
+            call_count=call_count,
+            rob_count=rob_count,
+            landlord_change_count=max(0, call_count + rob_count - 1),
         )
 
     def save_checkpoint(self) -> None:
@@ -765,6 +799,8 @@ class FullGameTrainer:
             "config_fingerprint": self.config.fingerprint(),
             "rules_hash": self.rules_hash,
             "feature_fingerprint": _stable_hash(asdict(self.feature_config)),
+            "bidding_training_fingerprint": self.bidding_training_fingerprint,
+            "cardplay_training_fingerprint": self.cardplay_training_fingerprint,
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "bid_model_fingerprint": self.bid_model_config.fingerprint(),
             "bid_model_schema_version": BID_HEAD_SCHEMA_VERSION,
@@ -806,6 +842,8 @@ class FullGameTrainer:
             "git_commit": _git_commit(self.config.rules_path.parents[2]),
             "rules_hash": self.rules_hash,
             "feature_fingerprint": _stable_hash(asdict(self.feature_config)),
+            "bidding_training_fingerprint": self.bidding_training_fingerprint,
+            "cardplay_training_fingerprint": self.cardplay_training_fingerprint,
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "model_arch_version": f"{BID_HEAD_ARCHITECTURE}+{BIRD_DOU_ARCHITECTURE}",
             "bid_model_fingerprint": self.bid_model_config.fingerprint(),
@@ -867,6 +905,8 @@ class FullGameTrainer:
             "config_fingerprint": self.config.fingerprint(),
             "rules_hash": self.rules_hash,
             "feature_fingerprint": _stable_hash(asdict(self.feature_config)),
+            "bidding_training_fingerprint": self.bidding_training_fingerprint,
+            "cardplay_training_fingerprint": self.cardplay_training_fingerprint,
             "feature_schema_version": FEATURE_SCHEMA_VERSION,
             "bid_model_fingerprint": self.bid_model_config.fingerprint(),
             "bid_model_schema_version": BID_HEAD_SCHEMA_VERSION,
@@ -972,6 +1012,10 @@ class FullGameTrainer:
                 positive_bid_count=_integer(row, "positive_bid_count"),
                 landlord_won=_boolean(row, "landlord_won"),
                 landlord_score=_number(row, "landlord_score"),
+                bidding_mode=_string(row, "bidding_mode"),
+                call_count=_integer(row, "call_count"),
+                rob_count=_integer(row, "rob_count"),
+                landlord_change_count=_integer(row, "landlord_change_count"),
             )
             self.monitor.add(summary)
             self._summaries.append(summary)
@@ -1061,6 +1105,17 @@ def _stable_hash(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _parsed_training_fingerprint(
+    value: BirdDouDmcConfig,
+    locator_fields: tuple[str, ...],
+) -> str:
+    """Hash parsed configuration content while excluding file locator strings."""
+    payload = asdict(value)
+    for key in locator_fields:
+        payload.pop(key, None)
+    return _stable_hash(payload)
 
 
 def _sha256_file(path: Path) -> str:
