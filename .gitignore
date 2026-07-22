@@ -32,3 +32,6 @@ python/birddou/_native*.dylib
 !/artifacts/baselines/perfectdou/
 /artifacts/baselines/perfectdou/*
 !/artifacts/baselines/perfectdou/manifest.toml
+!/artifacts/baselines/huanle_repair/
+/artifacts/baselines/huanle_repair/*
+!/artifacts/baselines/huanle_repair/manifest.json

@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "baseline_id": "huanle_repair_r000",
+  "purpose": "Immutable pre-repair baseline for the Huanle Dou Dizhu repair plan; measurements are engineering baselines, not playing-strength claims.",
+  "git": {
+    "commit": "872da8df14ce2d8a7f20d85928eb3e6ae039c314",
+    "annotated_tag": "baseline/huanle-repair-872da8d",
+    "repair_branch": "codex/huanle-repair",
+    "worktree_clean_before_capture": true
+  },
+  "rules": [
+    {
+      "path": "configs/rules/douzero_post_bid.yaml",
+      "schema_version": 1,
+      "rule_config_id": 1,
+      "profile": "douzero_post_bid",
+      "sha256": "882e140e32c269ea1821c6bd7275f3597e3671aa1cbd9eb6bf34d15c4cbd49c3"
+    },
+    {
+      "path": "configs/rules/canonical_full.yaml",
+      "schema_version": 1,
+      "rule_config_id": 2,
+      "profile": "canonical_full",
+      "compatibility_status": "legacy_experimental",
+      "sha256": "754f5f14f2a824c7382cbc9a06ae0f516072e90eac084ef507ce469facc3de3f"
+    }
+  ],
+  "local_environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cpu": "12th Gen Intel(R) Core(TM) i7-12700F",
+    "python": "3.13.11",
+    "torch": "2.13.0+cpu"
+  },
+  "tests": [
+    {
+      "command": "cargo test -p ddz-rules",
+      "status": "passed",
+      "passed": 63,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "command": "uv run pytest -q",
+      "status": "passed_with_expected_cuda_skip",
+      "passed": 182,
+      "failed": 0,
+      "skipped": 1,
+      "skip_reason": "tests/python/test_full_game_trainer.py::test_cuda_fp16_full_game_update requires CUDA FP16 autocast",
+      "elapsed_seconds": 54.24
+    },
+    {
+      "command": "uv run ruff format --check .",
+      "status": "failed_baseline",
+      "would_reformat": [
+        "python/birddou/belief/training.py",
+        "python/birddou/cli/train_belief.py",
+        "python/birddou/models/bid_head.py",
+        "python/birddou/rl/bidding.py",
+        "tests/python/test_full_game_trainer.py"
+      ],
+      "formatted_files": 130
+    }
+  ],
+  "benchmark": {
+    "command": "uv run python scripts/benchmark_batch_env.py --batch-size 32 --ticks 20 --repeats 3 --seed 20260722 --rules configs/rules/douzero_post_bid.yaml",
+    "profile": "douzero_post_bid",
+    "schema_version": 1,
+    "seed": 20260722,
+    "batch_size": 32,
+    "ticks": 20,
+    "repeats": 3,
+    "transitions_per_repeat": 620,
+    "single_object_api_median_seconds": 0.20062770001823083,
+    "single_object_api_transitions_per_second": 3090.3010897481317,
+    "packed_batch_api_median_seconds": 0.06862380000529811,
+    "packed_batch_api_transitions_per_second": 9034.766363158742,
+    "packed_vs_single_speedup": 2.923587734907443
+  },
+  "ci": {
+    "workflow": "CI",
+    "run_id": 29915697989,
+    "head_sha": "872da8df14ce2d8a7f20d85928eb3e6ae039c314",
+    "status": "completed",
+    "conclusion": "failure",
+    "url": "https://github.com/jz315/bird-dou/actions/runs/29915697989",
+    "failed_step": "Python / python -m ruff format --check .",
+    "failure_summary": "Five existing files would be reformatted; this is captured as the pre-repair baseline and is not fixed by R000."
+  }
+}
