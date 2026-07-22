@@ -249,6 +249,34 @@ def test_kd_value_loss_weights_states_equally_not_actions_equally() -> None:
     assert loss != per_action.mean()
 
 
+def test_belief_teacher_and_is_kd_run_under_cpu_bfloat16_autocast() -> None:
+    torch.manual_seed(6011)
+    batch, _, _ = state_batch()
+    student = BeliefBirdDouModel(student_config())
+    teacher = PrivilegedTeacher(teacher_config())
+    config = InformationSetDistillationConfig(belief_samples_k=1)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        result = information_set_distillation_loss(
+            student,
+            teacher,
+            batch,
+            None,
+            config,
+            generator=torch.Generator().manual_seed(6011),
+        )
+    torch.autograd.backward((result.loss,))
+
+    assert result.student.scores.dtype == torch.bfloat16
+    assert result.student.marginals.log_partition.dtype == torch.float32
+    assert result.q_bar.dtype == torch.float32
+    assert result.teacher_probability.dtype == torch.float32
+    assert result.loss.dtype == torch.float32 and torch.isfinite(result.loss)
+    assert all(
+        parameter.grad is None or torch.isfinite(parameter.grad).all()
+        for parameter in student.parameters()
+    )
+
+
 def test_privileged_critic_loss_and_student_checkpoint_leakage_boundary() -> None:
     """Centralized supervision backpropagates, while Student weights expose no Oracle module."""
     batch, true_assignment, _ = state_batch()

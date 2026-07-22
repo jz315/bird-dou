@@ -1,11 +1,12 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "collection_epsilon": 0.05,
   "monte_carlo": {
     "max_actions": 1000,
     "all_pass_win_target": 0.5
   },
   "loss": {
-    "policy_weight": 1.0,
+    "q_weight": 1.0,
     "win_weight": 1.0,
     "score_weight": 0.25,
     "policy_temperature": 0.25,

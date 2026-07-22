@@ -262,13 +262,15 @@ class BirdDouModel(nn.Module):
         if not state_before_role.is_floating_point() or not torch.isfinite(state_before_role).all():
             raise ValueError("BIRD-Dou fused state must be finite and floating")
         state = self.role_adapter(state_before_role, public.seat)
+        state = state.to(public.rank_tokens.dtype)
         actions = self.action_encoder(batch, state, public.rank_tokens)
         action_seat = public.seat[batch.action_state_index]
         raw = self.output_heads(actions.action, action_seat)
         policy_logit = raw[:, 0]
-        policy_log_normalizer = segment_logsumexp(policy_logit, batch.action_offsets)
-        policy_log_probability = policy_logit - policy_log_normalizer[batch.action_state_index]
-        policy_probability = segment_softmax(policy_logit, batch.action_offsets)
+        policy_logit_fp32 = policy_logit.float()
+        policy_log_normalizer = segment_logsumexp(policy_logit_fp32, batch.action_offsets)
+        policy_log_probability = policy_logit_fp32 - policy_log_normalizer[batch.action_state_index]
+        policy_probability = segment_softmax(policy_logit_fp32, batch.action_offsets)
         win_logit = raw[:, 1]
         score_if_win = functional.softplus(raw[:, 2])
         score_if_loss = -functional.softplus(raw[:, 3])

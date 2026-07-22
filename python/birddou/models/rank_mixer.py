@@ -98,8 +98,8 @@ class RmsNorm(nn.Module):
 
     def forward(self, inputs: Tensor) -> Tensor:
         variance = inputs.float().pow(2).mean(dim=-1, keepdim=True)
-        normalized = inputs * torch.rsqrt(variance.to(inputs.dtype) + self.epsilon)
-        return normalized * self.weight
+        normalized = inputs.float() * torch.rsqrt(variance + self.epsilon)
+        return (normalized * self.weight.float()).to(inputs.dtype)
 
 
 class DropPath(nn.Module):
@@ -229,7 +229,9 @@ class RelativeRankAttention(nn.Module):
         value = value.transpose(1, 2)
         scores = torch.matmul(query, key.transpose(-2, -1)) * self.scale
         bias = self.relative_bias[:, self.relative_index]
-        probabilities = self.attention_dropout(torch.softmax(scores + bias[None, ...], dim=-1))
+        probabilities = self.attention_dropout(
+            torch.softmax((scores + bias[None, ...]).float(), dim=-1)
+        ).to(value.dtype)
         attended = torch.matmul(probabilities, value)
         attended = attended.transpose(1, 2).reshape(batch_size, rank_count, width)
         update = self.output_dropout(self.output(attended))

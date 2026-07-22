@@ -262,8 +262,8 @@ class ActionRankCrossAttention(nn.Module):
             .transpose(1, 2)
         )
         scores = torch.einsum("mhd,mhrd->mhr", query_heads, key_heads) * self.scale
-        weights = torch.softmax(scores, dim=-1)
-        context_weights = self.dropout(weights)
+        weights = torch.softmax(scores.float(), dim=-1)
+        context_weights = self.dropout(weights).to(value_heads.dtype)
         context = torch.einsum("mhr,mhrd->mhd", context_weights, value_heads).reshape(
             action_count, width
         )
@@ -356,8 +356,10 @@ def _validate_action_context(
         raise ValueError("state shape must be [B, d_model]")
     if rank_tokens.shape != (batch.batch_size, ACTION_RANK_COUNT, d_model):
         raise ValueError("rank token shape must be [B, 15, d_model]")
-    if state.dtype != torch.float32 or rank_tokens.dtype != torch.float32:
-        raise ValueError("state and rank tokens must use float32")
+    if not state.is_floating_point() or not rank_tokens.is_floating_point():
+        raise ValueError("state and rank tokens must use floating dtypes")
+    if state.dtype != rank_tokens.dtype:
+        raise ValueError("state and rank tokens must share one floating dtype")
     if not torch.isfinite(state).all() or not torch.isfinite(rank_tokens).all():
         raise ValueError("action context contains NaN or infinity")
     devices = {

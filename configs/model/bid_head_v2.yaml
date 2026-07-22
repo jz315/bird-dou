@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "architecture": "bird_dou_bid_head_v1",
+  "schema_version": 2,
+  "architecture": "bird_dou_bid_head_v2",
   "d_model": 128,
   "rank_layers": 2,
   "history_layers": 1,

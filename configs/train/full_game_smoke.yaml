@@ -1,8 +1,8 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "trainer_mode": "full_game_joint",
   "rules_path": "configs/rules/canonical_full.yaml",
-  "bid_model_path": "configs/model/bid_head_v1.yaml",
+  "bid_model_path": "configs/model/bid_head_v2.yaml",
   "cardplay_model_path": "configs/model/bird_dou_v1.yaml",
   "feature_path": "configs/model/bird_dou_features_v1.yaml",
   "bidding_training_path": "configs/train/bidding.yaml",

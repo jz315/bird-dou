@@ -422,22 +422,28 @@ def bird_dou_dmc_loss(
         raise ValueError("BIRD-Dou win targets must be in 0..1")
     if torch.any(turns_target <= 0.0):
         raise ValueError("BIRD-Dou turn targets must be positive")
-    mc_q = dmc_value_loss(output.mc_q[chosen], terminal_target, config.loss, config.huber_delta)
+    terminal_target = terminal_target.float()
+    raw_score = raw_score.float()
+    win_target = win_target.float()
+    turns_target = turns_target.float()
+    mc_q = dmc_value_loss(
+        output.mc_q[chosen].float(), terminal_target, config.loss, config.huber_delta
+    )
     policy = -output.policy_log_probability[chosen].mean()
-    win = functional.binary_cross_entropy_with_logits(output.win_logit[chosen], win_target)
+    win = functional.binary_cross_entropy_with_logits(output.win_logit[chosen].float(), win_target)
     conditional_score = torch.where(
         win_target > 0.5,
-        output.score_if_win[chosen],
-        output.score_if_loss[chosen],
+        output.score_if_win[chosen].float(),
+        output.score_if_loss[chosen].float(),
     )
     score = functional.huber_loss(conditional_score, raw_score, delta=config.huber_delta)
     turns = functional.huber_loss(
-        output.turns_to_finish[chosen], turns_target, delta=config.huber_delta
+        output.turns_to_finish[chosen].float(), turns_target, delta=config.huber_delta
     )
     conditional_quantiles = torch.where(
         (win_target > 0.5).unsqueeze(-1),
-        output.score_win_quantiles[chosen],
-        output.score_loss_quantiles[chosen],
+        output.score_win_quantiles[chosen].float(),
+        output.score_loss_quantiles[chosen].float(),
     )
     quantile = _quantile_huber_loss(conditional_quantiles, raw_score, config.huber_delta)
     total = (

@@ -143,6 +143,25 @@ def test_complete_forward_normalizes_every_segment_and_backpropagates() -> None:
     )
 
 
+def test_cpu_bfloat16_autocast_forward_backward_keeps_reductions_fp32() -> None:
+    torch.manual_seed(20024)
+    batch = all_role_batch()
+    model = BirdDouModel(tiny_config())
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        output = model(batch)
+        loss = output.mc_q.float().square().mean() - output.policy_log_probability.mean()
+    torch.autograd.backward((loss,))
+
+    assert output.mc_q.dtype == torch.bfloat16
+    assert output.policy_probability.dtype == torch.float32
+    assert output.policy_log_probability.dtype == torch.float32
+    assert loss.dtype == torch.float32 and torch.isfinite(loss)
+    assert all(
+        parameter.grad is None or torch.isfinite(parameter.grad).all()
+        for parameter in model.parameters()
+    )
+
+
 def test_default_config_is_medium_sized_and_roundtrips_exactly(tmp_path: Path) -> None:
     """The frozen model stays in its 20M-35M budget and restores weights exactly."""
     loaded = load_bird_dou_config(MODEL_CONFIG_PATH)

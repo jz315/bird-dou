@@ -104,8 +104,8 @@ def information_set_distillation_loss(
     teacher.eval()
     with torch.no_grad():
         for sample_index in range(samples.shape[1]):
-            q_values.append(teacher(batch, samples[:, sample_index]).policy.mc_q)
-    q_bar = torch.stack(q_values, dim=0).mean(dim=0)
+            q_values.append(teacher(batch, samples[:, sample_index]).policy.mc_q.float())
+    q_bar = torch.stack(q_values, dim=0).mean(dim=0, dtype=torch.float32)
     teacher_probability = segment_softmax(
         q_bar / config.teacher_temperature,
         batch.action_offsets,
@@ -116,7 +116,7 @@ def information_set_distillation_loss(
     terms = teacher_probability * (log_teacher - student_output.policy.policy_log_probability)
     policy_kl = segment_sum(terms, batch.action_offsets).mean()
     value_loss = per_state_action_huber_loss(
-        student_output.policy.mc_q,
+        student_output.policy.mc_q.float(),
         q_bar,
         batch.action_offsets,
     )
@@ -145,7 +145,7 @@ def direct_state_distillation_loss(
     student_output = student(batch)
     teacher.eval()
     with torch.no_grad():
-        q_bar = teacher(batch, true_assignment_a).policy.mc_q
+        q_bar = teacher(batch, true_assignment_a).policy.mc_q.float()
     teacher_probability = segment_softmax(
         q_bar / config.teacher_temperature,
         batch.action_offsets,
@@ -156,7 +156,7 @@ def direct_state_distillation_loss(
     terms = teacher_probability * (log_teacher - student_output.policy.policy_log_probability)
     policy_kl = segment_sum(terms, batch.action_offsets).mean()
     value_loss = per_state_action_huber_loss(
-        student_output.policy.mc_q,
+        student_output.policy.mc_q.float(),
         q_bar,
         batch.action_offsets,
     )
@@ -184,8 +184,8 @@ def privileged_critic_loss(
         raise ValueError("privileged critic loss requires chosen actions")
     if terminal_target.shape != (batch.batch_size,) or not torch.isfinite(terminal_target).all():
         raise ValueError("privileged critic targets must be finite [B]")
-    prediction = teacher(batch, true_assignment_a).policy.mc_q[chosen]
-    return functional.huber_loss(prediction, terminal_target)
+    prediction = teacher(batch, true_assignment_a).policy.mc_q[chosen].float()
+    return functional.huber_loss(prediction, terminal_target.float())
 
 
 def per_state_action_huber_loss(
@@ -205,7 +205,7 @@ def per_state_action_huber_loss(
     lengths = action_offsets[1:] - action_offsets[:-1]
     if torch.any(lengths <= 0):
         raise ValueError("KD states must each contain at least one legal action")
-    per_action = functional.huber_loss(prediction, target, reduction="none")
+    per_action = functional.huber_loss(prediction.float(), target.float(), reduction="none")
     per_state = segment_sum(per_action, action_offsets) / lengths.to(per_action)
     return per_state.mean()
 

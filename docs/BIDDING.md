@@ -46,10 +46,11 @@ capacity conservation at extreme capacities.
 - the 37-card unknown union through the constrained three-container belief;
 - the complete ragged legal bid set.
 
-Each legal action receives a policy logit, final-win logit, and expected final
-score. Segment softmax normalizes only within that state's legal actions. The
-card-play Ragged encoder explicitly rejects bidding observations, which keeps the
-two feature contracts unambiguous.
+Each legal action receives an MC-Q value, final-win logit, and expected final
+score. A segment softmax over MC-Q is a diagnostic distribution normalized only
+within that state's legal actions; it is not treated as an on-policy Actor-Critic
+sample. The card-play Ragged encoder explicitly rejects bidding observations,
+which keeps the two feature contracts unambiguous.
 
 ## Monte Carlo initialization and joint training
 
@@ -69,20 +70,36 @@ checkpointed, so interruption cannot silently repeat or skip initialization.
 
 A formal run must name a pretrained Cardplay checkpoint, its SHA-256, and its
 policy version. The trainer verifies those values plus model and feature
-fingerprints before creating any bid label. MC initialization and the frozen joint
-stage execute the same `BirdDouPolicy`; metric-gated unfreezing changes gradient
-flow, not the continuation policy's identity. Checkpoints, manifests, and
-pretraining rows record its hash, policy version, architecture, decision mode, and
-rules hash. `allow_random_cardplay_smoke: true` is the only checkpoint-free path;
-it uses `LongestMovePolicy` solely for a fast mechanical CPU smoke and carries no
-playing-strength claim.
+fingerprints before creating any bid label. MC rollout composes a fixed auditable
+bidder and doubler with that Cardplay-only `BirdDouPolicy`, so Cardplay never sees
+bidding or doubling observations. The frozen joint stage uses the same Cardplay
+component. Checkpoints, manifests, and pretraining rows record the composite,
+bidding, doubling, and Cardplay identities together with the model hash/version,
+architecture, decision mode, and rules hash. The executable gate runs one actual
+checksum-pinned warm-start MC update across pass and bids 1/2/3 and observes subsequent
+bidding, doubling, and card-play phases. `allow_random_cardplay_smoke: true` is the
+only checkpoint-free path; it uses `LongestMovePolicy` solely for a fast mechanical
+CPU smoke and carries no playing-strength claim.
 
 `collect_complete_episode` records bidding and card-play decisions from one full
 game under a single terminal payoff. `build_joint_bid_batch` attaches that payoff
 to every earlier bid, while card-play decisions remain available to the existing
-learner. `joint_bid_loss` trains chosen bid policy/outcome heads and
+learner. `joint_bid_loss` trains chosen bid value/outcome heads and
 `combine_joint_training_loss` includes the external card-play loss only after the
 curriculum unfreezes it.
+
+Joint collection is value-based: after fixed warmup, the Bid Head chooses MC-Q
+epsilon-greedily with a context-derived reproducible exploration draw. The selected
+action's MC-Q, win, and score heads regress the terminal outcome. There is no
+REINFORCE term, action-dependent baseline, behavior-policy assumption, or hidden
+off-policy correction. MC initialization supervises all legal candidates. Entropy
+is computed as a segment sum per information set and then averaged across states.
+
+Under autocast, matrix-heavy network layers may use FP16/BF16 while constrained CRF
+dynamic programs, RMS variance accumulation, probability normalization, and loss
+reductions remain FP32. CPU BF16 forward/backward gates cover Bid Head, Cardplay,
+Belief, Teacher, and IS-KD; a CUDA FP16 full-game update is collected by the test
+suite when CUDA is available.
 
 The metric-gated curriculum has three stages:
 
@@ -110,7 +127,7 @@ prove the full pipeline, exact constraints, and complete scoring. A research-sca
 paired run is still required before claiming that a trained bidder is stronger.
 
 Relevant configuration files are
-[`configs/model/bid_head_v1.yaml`](../configs/model/bid_head_v1.yaml) and
+[`configs/model/bid_head_v2.yaml`](../configs/model/bid_head_v2.yaml) and
 [`configs/train/bidding.yaml`](../configs/train/bidding.yaml). Full-game run budgets
 `bid_pretraining_batches` and `bid_pretraining_hidden_samples` are declared in the
 full-game trainer config rather than hard-coded.

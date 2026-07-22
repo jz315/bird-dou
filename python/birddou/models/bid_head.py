@@ -21,8 +21,8 @@ from birddou.env_types import Action, BidAction, BidGameAction, Observation, Rul
 from birddou.models.rank_mixer import RmsNorm
 from birddou.models.segment_ops import segment_softmax, segment_state_index
 
-BID_HEAD_SCHEMA_VERSION = 1
-BID_HEAD_ARCHITECTURE = "bird_dou_bid_head_v1"
+BID_HEAD_SCHEMA_VERSION = 2
+BID_HEAD_ARCHITECTURE = "bird_dou_bid_head_v2"
 BID_ACTION_COUNT = 6
 BID_HISTORY_PAD = BID_ACTION_COUNT
 BID_ACTOR_PAD = 3
@@ -182,8 +182,9 @@ class BidBatch:
 
 @dataclass(frozen=True, slots=True)
 class BidHeadOutput:
-    """Candidate policy/outcome predictions and constrained belief diagnostics."""
+    """Candidate DMC value/outcome predictions and constrained belief diagnostics."""
 
+    mc_q: Tensor
     policy_logits: Tensor
     policy_probability: Tensor
     win_logit: Tensor
@@ -397,9 +398,11 @@ class BidHead(nn.Module):
         action_state = state[batch.action_state_index]
         action = self.action_embedding(batch.legal_action_code)
         predictions = self.outcome_head(torch.cat((action_state, action), dim=-1))
-        policy_logits, win_logit, expected_score = predictions.unbind(dim=-1)
-        policy_probability = segment_softmax(policy_logits, batch.action_offsets)
+        mc_q, win_logit, expected_score = predictions.unbind(dim=-1)
+        policy_logits = mc_q
+        policy_probability = segment_softmax(policy_logits.float(), batch.action_offsets)
         return BidHeadOutput(
+            mc_q=mc_q,
             policy_logits=policy_logits,
             policy_probability=policy_probability,
             win_logit=win_logit,

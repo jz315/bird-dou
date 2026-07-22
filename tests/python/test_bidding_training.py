@@ -1,11 +1,13 @@
 """Monte Carlo initialization, joint loss, curriculum, and complete-Arena tests."""
 
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import torch
 
-from birddou import PyDdzEnv, RuleConfig, load_rule_config
+from birddou import Action, Observation, PyDdzEnv, RuleConfig, load_rule_config
 from birddou.eval.arena import Arena
 from birddou.eval.baselines import (
     FirstLegalPolicy,
@@ -15,6 +17,7 @@ from birddou.eval.baselines import (
 )
 from birddou.eval.paired_deals import ScheduledMatch, SeatAssignment, generate_paired_deals
 from birddou.models.bid_head import BidHead, BidHeadConfig, encode_bid_batch
+from birddou.models.segment_ops import segment_softmax, segment_sum
 from birddou.rl.bidding import (
     BiddingAcceptanceThresholds,
     BiddingDistributionMonitor,
@@ -44,6 +47,23 @@ RULES_PATH = ROOT / "configs" / "rules" / "canonical_full.yaml"
 TRAIN_PATH = ROOT / "configs" / "train" / "bidding.yaml"
 
 
+class _RecordingContinuation:
+    policy_id = "recording-mc-continuation"
+
+    def __init__(self, inner: FixedBidPolicy) -> None:
+        self.inner = inner
+        self.phases: list[str] = []
+
+    def select_action(
+        self,
+        observation: Observation,
+        legal_actions: Sequence[Action],
+        context: PolicyDecisionContext,
+    ) -> int:
+        self.phases.append(observation["phase"])
+        return self.inner.select_action(observation, legal_actions, context)
+
+
 def _rules() -> RuleConfig:
     return load_rule_config(RULES_PATH)
 
@@ -68,7 +88,7 @@ def _sample_deals() -> tuple[CompleteDealSample, CompleteDealSample]:
 
 
 def _small_model() -> BidHead:
-    config = BidHeadConfig(1, "bird_dou_bid_head_v1", 32, 1, 1, 4, 2, 3, 0.0)
+    config = BidHeadConfig(2, "bird_dou_bid_head_v2", 32, 1, 1, 4, 2, 3, 0.0)
     return BidHead(config)
 
 
@@ -93,7 +113,14 @@ def test_initial_bid_sampler_preserves_information_set_and_card_conservation() -
 def test_mc_initialization_branches_every_bid_and_fits_outcome_heads() -> None:
     rules = _rules()
     samples = _sample_deals()
-    continuation = LongestMovePolicy("frozen-cardplay")
+    continuation = _RecordingContinuation(
+        FixedBidPolicy(
+            "fixed-mc-continuation",
+            LongestMovePolicy("frozen-cardplay"),
+            score_bid=1,
+            double=False,
+        )
+    )
     labels = generate_initial_bid_mc_labels(
         samples, rules, continuation, MonteCarloConfig(1000, 0.5)
     )
@@ -107,11 +134,12 @@ def test_mc_initialization_branches_every_bid_and_fits_outcome_heads() -> None:
     output = _small_model()(batch)
     config = load_bidding_training_config(TRAIN_PATH).loss
     loss = bid_supervised_loss(output, labels, batch.action_offsets, config)
-    (gradient,) = torch.autograd.grad(loss.total, output.policy_logits, retain_graph=True)
+    (gradient,) = torch.autograd.grad(loss.total, output.mc_q, retain_graph=True)
 
     assert labels.sample_count.tolist() == [2, 2, 2, 2]
     assert torch.all((labels.win_target >= 0.0) & (labels.win_target <= 1.0))
     assert torch.isfinite(labels.score_target).all()
+    assert {"bidding", "doubling", "card_play"} <= set(continuation.phases)
     assert torch.isfinite(loss.total)
     assert torch.isfinite(gradient).all()
 
@@ -121,6 +149,7 @@ def test_mc_initialization_branches_every_bid_and_fits_outcome_heads() -> None:
         chosen,
         torch.tensor([1.0]),
         torch.tensor([4.0]),
+        batch.action_offsets,
         config,
     )
     assert torch.isfinite(joint.total)
@@ -205,6 +234,7 @@ def test_complete_collector_attaches_one_terminal_return_to_both_stages() -> Non
         joint_batch.chosen_flat_index,
         joint_batch.terminal_win,
         joint_batch.terminal_score,
+        joint_batch.batch.action_offsets,
         config.loss,
     )
     curriculum = WinScoreCurriculum(config.curriculum, config.loss.score_weight)
@@ -241,8 +271,58 @@ def test_bid_head_policy_adapter_uses_only_bidding_boundary() -> None:
     assert 0 <= selected < len(actions)
 
 
+def test_joint_bid_loss_is_selected_action_dmc_with_per_state_entropy() -> None:
+    rules = _rules()
+    first = PyDdzEnv()
+    second = PyDdzEnv()
+    first_observation = first.reset(101, rules)
+    second.reset(102, rules)
+    second.step(second.legal_actions()[0])
+    observations = (first_observation, second.observe(second.current_player))
+    legal = (tuple(first.legal_actions()), tuple(second.legal_actions()))
+    batch = encode_bid_batch(observations, legal, rules)
+    output = _small_model()(batch)
+    config = replace(load_bidding_training_config(TRAIN_PATH).loss, entropy_weight=0.0)
+    chosen = batch.action_offsets[:-1]
+    targets_win = torch.tensor([1.0, 0.0])
+    targets_score = torch.tensor([2.0, -2.0])
+    loss = joint_bid_loss(
+        output,
+        chosen,
+        targets_win,
+        targets_score,
+        batch.action_offsets,
+        config,
+    )
+    (gradient,) = torch.autograd.grad(loss.total, output.mc_q, retain_graph=True)
+    non_chosen = torch.ones_like(gradient, dtype=torch.bool)
+    non_chosen[chosen] = False
+    assert torch.count_nonzero(gradient[non_chosen]) == 0
+    assert torch.count_nonzero(gradient[chosen]) == chosen.numel()
+
+    entropy_config = replace(config, entropy_weight=0.001)
+    entropy_loss = joint_bid_loss(
+        output,
+        chosen,
+        targets_win,
+        targets_score,
+        batch.action_offsets,
+        entropy_config,
+    )
+    probability = segment_softmax(
+        output.mc_q.float() / entropy_config.policy_temperature,
+        batch.action_offsets,
+    )
+    expected_entropy = -segment_sum(
+        probability * probability.clamp_min(torch.finfo(torch.float32).tiny).log(),
+        batch.action_offsets,
+    ).mean()
+    torch.testing.assert_close(entropy_loss.entropy, expected_entropy)
+
+
 def test_training_config_rejects_invalid_loss_switches() -> None:
     config = load_bidding_training_config(TRAIN_PATH)
-    assert config.schema_version == 1
+    assert config.schema_version == 2
+    assert config.collection_epsilon == pytest.approx(0.05)
     with pytest.raises(ValueError, match="weights"):
         BidLossConfig(-1.0, 1.0, 0.0, 1.0, 16.0, 0.0)

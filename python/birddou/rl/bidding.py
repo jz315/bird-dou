@@ -24,7 +24,7 @@ from birddou.eval.paired_deals import role_for_game_seat, splitmix64
 from birddou.models.bid_head import BidBatch, BidHead, BidHeadOutput, encode_bid_batch
 from birddou.models.segment_ops import segment_softmax, segment_sum
 
-BIDDING_TRAINING_SCHEMA_VERSION = 1
+BIDDING_TRAINING_SCHEMA_VERSION = 2
 
 
 class BiddingStage(StrEnum):
@@ -51,9 +51,9 @@ class MonteCarloConfig:
 
 @dataclass(frozen=True, slots=True)
 class BidLossConfig:
-    """Weights for MC supervision and on-policy joint outcome learning."""
+    """Weights for all-action MC supervision and selected-action DMC learning."""
 
-    policy_weight: float
+    q_weight: float
     win_weight: float
     score_weight: float
     policy_temperature: float
@@ -61,7 +61,7 @@ class BidLossConfig:
     entropy_weight: float
 
     def __post_init__(self) -> None:
-        weights = (self.policy_weight, self.win_weight, self.score_weight, self.entropy_weight)
+        weights = (self.q_weight, self.win_weight, self.score_weight, self.entropy_weight)
         if any(not math.isfinite(value) or value < 0.0 for value in weights):
             raise ValueError("Bid loss weights must be finite and non-negative")
         if self.policy_temperature <= 0.0 or self.score_scale <= 0.0:
@@ -97,10 +97,13 @@ class BiddingTrainingConfig:
     monte_carlo: MonteCarloConfig
     loss: BidLossConfig
     curriculum: CurriculumThresholds
+    collection_epsilon: float
 
     def __post_init__(self) -> None:
         if self.schema_version != BIDDING_TRAINING_SCHEMA_VERSION:
             raise ValueError("unsupported bidding training schema")
+        if not math.isfinite(self.collection_epsilon) or not 0.0 <= self.collection_epsilon <= 1.0:
+            raise ValueError("bidding collection_epsilon must be finite in [0, 1]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +132,19 @@ class MonteCarloBidLabels:
     win_target: Tensor
     score_target: Tensor
     sample_count: Tensor
+
+    def __post_init__(self) -> None:
+        action_count = len(self.legal_actions)
+        if action_count == 0:
+            raise ValueError("Monte Carlo labels require legal actions")
+        if self.win_target.shape != (action_count,) or not self.win_target.is_floating_point():
+            raise ValueError("win targets must be floating [M]")
+        if self.score_target.shape != (action_count,) or not self.score_target.is_floating_point():
+            raise ValueError("score targets must be floating [M]")
+        if self.sample_count.dtype != torch.int64 or self.sample_count.shape != (action_count,):
+            raise ValueError("sample counts must be int64 [M]")
+        if torch.any(self.sample_count <= 0):
+            raise ValueError("every legal bid must have at least one rollout")
 
 
 def sample_initial_bid_deals(
@@ -175,19 +191,6 @@ def sample_initial_bid_deals(
             )
         )
     return tuple(samples)
-
-    def __post_init__(self) -> None:
-        action_count = len(self.legal_actions)
-        if action_count == 0:
-            raise ValueError("Monte Carlo labels require legal actions")
-        if self.win_target.shape != (action_count,) or not self.win_target.is_floating_point():
-            raise ValueError("win targets must be floating [M]")
-        if self.score_target.shape != (action_count,) or not self.score_target.is_floating_point():
-            raise ValueError("score targets must be floating [M]")
-        if self.sample_count.dtype != torch.int64 or self.sample_count.shape != (action_count,):
-            raise ValueError("sample counts must be int64 [M]")
-        if torch.any(self.sample_count <= 0):
-            raise ValueError("every legal bid must have at least one rollout")
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,10 +255,10 @@ class JointTrainingLoss:
 
 @dataclass(frozen=True, slots=True)
 class BidLossOutput:
-    """Auditable components of one Bid Head training objective."""
+    """Auditable value-based components of one Bid Head training objective."""
 
     total: Tensor
-    policy: Tensor
+    q: Tensor
     win: Tensor
     score: Tensor
     entropy: Tensor
@@ -365,7 +368,7 @@ def load_bidding_training_config(path: Path) -> BiddingTrainingConfig:
             all_pass_win_target=_number(monte_carlo, "all_pass_win_target"),
         ),
         loss=BidLossConfig(
-            policy_weight=_number(loss, "policy_weight"),
+            q_weight=_number(loss, "q_weight"),
             win_weight=_number(loss, "win_weight"),
             score_weight=_number(loss, "score_weight"),
             policy_temperature=_number(loss, "policy_temperature"),
@@ -379,6 +382,7 @@ def load_bidding_training_config(path: Path) -> BiddingTrainingConfig:
             max_redeal_rate=_number(curriculum, "max_redeal_rate"),
             min_complete_games=_integer(curriculum, "min_complete_games"),
         ),
+        collection_epsilon=_number(root, "collection_epsilon"),
     )
 
 
@@ -473,7 +477,7 @@ def generate_initial_bid_mc_labels(
 
 
 class BidHeadPolicy:
-    """Deterministic inference adapter that accepts bidding observations only."""
+    """Reproducible epsilon-greedy DMC adapter for bidding observations only."""
 
     def __init__(
         self,
@@ -481,13 +485,22 @@ class BidHeadPolicy:
         model: BidHead,
         rules: RuleConfig,
         device: str | torch.device = "cpu",
+        *,
+        epsilon: float = 0.0,
+        seed: int = 0,
     ) -> None:
         if not policy_id:
             raise ValueError("Bid Head policy_id must be non-empty")
+        if not math.isfinite(epsilon) or not 0.0 <= epsilon <= 1.0:
+            raise ValueError("Bid Head epsilon must be finite in [0, 1]")
+        if not 0 <= seed < 1 << 64:
+            raise ValueError("Bid Head exploration seed must fit uint64")
         self._policy_id = policy_id
         self._model = model.to(device).eval()
         self._rules = rules
         self._device = device
+        self._epsilon = epsilon
+        self._seed = seed
 
     @property
     def policy_id(self) -> str:
@@ -509,7 +522,18 @@ class BidHeadPolicy:
         ).to(self._device)
         with torch.inference_mode():
             output = self._model(batch)
-        return int(torch.argmax(output.policy_logits).item())
+        greedy = int(torch.argmax(output.mc_q).item())
+        if len(legal_actions) <= 1 or self._epsilon == 0.0:
+            return greedy
+        mask = (1 << 64) - 1
+        key = self._seed ^ context.deal_seed
+        key ^= context.seat << 8
+        key ^= context.decision_index << 16
+        key ^= context.deal_index << 48
+        explore_bits = splitmix64(key & mask)
+        if explore_bits / float(1 << 64) >= self._epsilon:
+            return greedy
+        return splitmix64(explore_bits) % len(legal_actions)
 
 
 def collect_complete_episode(
@@ -664,27 +688,31 @@ def bid_supervised_loss(
     action_offsets: Tensor,
     config: BidLossConfig,
 ) -> BidLossOutput:
-    """Fit candidate outcomes and an outcome-ranked policy to Monte Carlo labels."""
-    if output.policy_logits.shape != labels.win_target.shape:
+    """Regress every legal candidate's DMC value and outcome to MC labels."""
+    if output.mc_q.shape != labels.win_target.shape:
         raise ValueError("Bid Head output and Monte Carlo labels differ in action count")
-    win_target = labels.win_target.to(output.win_logit)
-    score_target = labels.score_target.to(output.expected_score) / config.score_scale
-    win = functional.binary_cross_entropy_with_logits(output.win_logit, win_target)
-    score = functional.smooth_l1_loss(output.expected_score / config.score_scale, score_target)
-    utility = win_target + score_target * config.score_weight
-    target_policy = segment_softmax(utility / config.policy_temperature, action_offsets)
-    log_probability = torch.log(
-        output.policy_probability.clamp_min(torch.finfo(torch.float32).tiny)
+    win_logit = output.win_logit.float()
+    expected_score = output.expected_score.float()
+    mc_q = output.mc_q.float()
+    win_target = labels.win_target.to(device=win_logit.device, dtype=torch.float32)
+    score_target = labels.score_target.to(device=expected_score.device, dtype=torch.float32)
+    q_target = _terminal_bid_utility(win_target, score_target, config)
+    q = functional.smooth_l1_loss(mc_q, q_target)
+    win = functional.binary_cross_entropy_with_logits(win_logit, win_target)
+    score = functional.smooth_l1_loss(
+        expected_score / config.score_scale,
+        score_target / config.score_scale,
     )
-    policy = -segment_sum(target_policy * log_probability, action_offsets).mean()
-    entropy = -segment_sum(output.policy_probability * log_probability, action_offsets).mean()
+    probability = segment_softmax(mc_q / config.policy_temperature, action_offsets)
+    log_probability = torch.log(probability.clamp_min(torch.finfo(torch.float32).tiny))
+    entropy = -segment_sum(probability * log_probability, action_offsets).mean()
     total = (
-        config.policy_weight * policy
+        config.q_weight * q
         + config.win_weight * win
         + config.score_weight * score
         - config.entropy_weight * entropy
     )
-    return BidLossOutput(total, policy, win, score, entropy)
+    return BidLossOutput(total, q, win, score, entropy)
 
 
 def joint_bid_loss(
@@ -692,42 +720,50 @@ def joint_bid_loss(
     chosen_flat_index: Tensor,
     terminal_win: Tensor,
     terminal_score: Tensor,
+    action_offsets: Tensor,
     config: BidLossConfig,
 ) -> BidLossOutput:
-    """Apply terminal outcomes to chosen bids while retaining ragged policy gradients."""
+    """Apply terminal outcomes as selected-action DMC targets without policy gradients."""
     batch_size = chosen_flat_index.shape[0]
     if chosen_flat_index.dtype != torch.int64 or terminal_win.shape != (batch_size,):
         raise ValueError("joint bid chosen indices/win targets must be [B]")
     if terminal_score.shape != (batch_size,):
         raise ValueError("joint bid score targets must be [B]")
-    chosen_win = output.win_logit[chosen_flat_index]
-    chosen_score = output.expected_score[chosen_flat_index]
-    win_target = terminal_win.to(chosen_win)
-    score_target = terminal_score.to(chosen_score)
+    if action_offsets.dtype != torch.int64 or action_offsets.shape != (batch_size + 1,):
+        raise ValueError("joint bid action offsets must be int64 [B+1]")
+    chosen_q = output.mc_q[chosen_flat_index].float()
+    chosen_win = output.win_logit[chosen_flat_index].float()
+    chosen_score = output.expected_score[chosen_flat_index].float()
+    win_target = terminal_win.to(device=chosen_win.device, dtype=torch.float32)
+    score_target = terminal_score.to(device=chosen_score.device, dtype=torch.float32)
+    q_target = _terminal_bid_utility(win_target, score_target, config)
+    q = functional.smooth_l1_loss(chosen_q, q_target)
     win = functional.binary_cross_entropy_with_logits(chosen_win, win_target)
     score = functional.smooth_l1_loss(
         chosen_score / config.score_scale, score_target / config.score_scale
     )
-    value_baseline = (
-        torch.sigmoid(chosen_win.detach())
-        + config.score_weight * chosen_score.detach() / config.score_scale
+    probability = segment_softmax(
+        output.mc_q.float() / config.policy_temperature,
+        action_offsets,
     )
-    return_signal = win_target + config.score_weight * score_target / config.score_scale
-    log_probability = torch.log(
-        output.policy_probability[chosen_flat_index].clamp_min(torch.finfo(torch.float32).tiny)
-    )
-    policy = -(log_probability * (return_signal - value_baseline)).mean()
-    full_log_probability = torch.log(
-        output.policy_probability.clamp_min(torch.finfo(torch.float32).tiny)
-    )
-    entropy = -(output.policy_probability * full_log_probability).mean()
+    log_probability = torch.log(probability.clamp_min(torch.finfo(torch.float32).tiny))
+    entropy = -segment_sum(probability * log_probability, action_offsets).mean()
     total = (
-        config.policy_weight * policy
+        config.q_weight * q
         + config.win_weight * win
         + config.score_weight * score
         - config.entropy_weight * entropy
     )
-    return BidLossOutput(total, policy, win, score, entropy)
+    return BidLossOutput(total, q, win, score, entropy)
+
+
+def _terminal_bid_utility(
+    win_target: Tensor,
+    score_target: Tensor,
+    config: BidLossConfig,
+) -> Tensor:
+    """Center win/loss outcomes and add the configured normalized score utility."""
+    return 2.0 * win_target - 1.0 + config.score_weight * score_target / config.score_scale
 
 
 class WinScoreCurriculum:

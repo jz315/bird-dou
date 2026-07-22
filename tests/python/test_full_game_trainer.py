@@ -14,10 +14,12 @@ from birddou.cli.policy_artifacts import load_full_game_checkpoint_policy
 from birddou.features import load_feature_config
 from birddou.models.bird_dou import BirdDouModel, load_bird_dou_config
 from birddou.rl import (
+    BiddingStage,
     FullGameConfig,
     FullGameTrainer,
     FullGameTrainingError,
     load_full_game_config,
+    set_cardplay_frozen,
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +57,47 @@ def _write_cardplay_warm_start(path: Path, base: FullGameConfig) -> tuple[str, s
     return digest, key, expected
 
 
+def _with_tiny_cardplay_model(path: Path, base: FullGameConfig) -> FullGameConfig:
+    payload = json.loads(base.cardplay_model_path.read_text(encoding="utf-8"))
+    payload["d_model"] = 16
+    payload["rank_mixer"].update(
+        {
+            "blocks": 1,
+            "attention_every": 1,
+            "attention_heads": 2,
+            "rank_embedding_dim": 4,
+            "count_embedding_dim": 2,
+            "flag_embedding_dim": 2,
+            "swiglu_multiplier": 1,
+            "drop_path": 0.0,
+        }
+    )
+    payload["history"].update(
+        {
+            "gru_layers": 1,
+            "transformer_layers": 1,
+            "attention_heads": 2,
+            "count_embedding_dim": 2,
+            "categorical_embedding_dim": 2,
+            "feedforward_multiplier": 1,
+        }
+    )
+    payload["action"].update(
+        {
+            "blocks": 0,
+            "attention_heads": 2,
+            "count_embedding_dim": 2,
+            "meta_embedding_dim": 2,
+            "swiglu_multiplier": 1,
+        }
+    )
+    payload["role_adapter_dim"] = 4
+    payload["score_quantiles"] = 3
+    payload["output"] = {"hidden_multiplier": 1, "hidden_layers": 1}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return replace(base, cardplay_model_path=path)
+
+
 def test_full_game_trainer_updates_checkpoints_and_resumes(tmp_path: Path) -> None:
     base = load_full_game_config(CONFIG_PATH)
     first_config = replace(base, output_directory=tmp_path, episodes=1)
@@ -82,12 +125,18 @@ def test_full_game_trainer_updates_checkpoints_and_resumes(tmp_path: Path) -> No
     assert manifest["trainer_mode"] == "full_game_joint"
     assert manifest["training_phase"] == "bid_win_frozen"
     assert manifest["feature_schema_version"] == 1
-    assert manifest["model_arch_version"] == ("bird_dou_bid_head_v1+bird_dou_no_belief_v1")
+    assert manifest["model_arch_version"] == ("bird_dou_bid_head_v2+bird_dou_no_belief_v1")
     assert manifest["bid_model_fingerprint"]
     assert manifest["cardplay_model_fingerprint"]
     assert manifest["continuation_policy_hash"]
     assert manifest["continuation_model_architecture"] == "longest_move_smoke_only"
     assert manifest["continuation_decision_mode"] == "longest_move"
+    assert set(manifest["mc_continuation_provenance"]) == {
+        "composite_policy_id",
+        "bidding",
+        "doubling",
+        "cardplay",
+    }
     assert manifest["optimizer_state"]
     assert manifest["rng_state"]
     checkpoint = torch.load(tmp_path / "checkpoint.pt", weights_only=True)
@@ -123,13 +172,18 @@ def test_full_game_trainer_updates_checkpoints_and_resumes(tmp_path: Path) -> No
 def test_full_game_loads_verified_cardplay_and_reuses_it_as_continuation(
     tmp_path: Path,
 ) -> None:
-    base = load_full_game_config(CONFIG_PATH)
+    base = _with_tiny_cardplay_model(
+        tmp_path / "tiny-cardplay.json",
+        load_full_game_config(CONFIG_PATH),
+    )
     source = tmp_path / "strong-cardplay.pt"
     digest, key, expected = _write_cardplay_warm_start(source, base)
     config = replace(
         base,
         output_directory=tmp_path / "joint",
-        bid_pretraining_batches=0,
+        episodes=0,
+        bid_pretraining_batches=1,
+        bid_pretraining_hidden_samples=1,
         cardplay_checkpoint_path=source,
         cardplay_checkpoint_sha256=digest,
         cardplay_policy_version=17,
@@ -143,6 +197,14 @@ def test_full_game_loads_verified_cardplay_and_reuses_it_as_continuation(
     assert trainer.continuation_policy_version == 17
     assert trainer.continuation_model_architecture == "bird_dou_no_belief_v1"
     assert trainer.continuation_decision_mode == "mc_q"
+    assert trainer.mc_continuation_policy.cardplay is trainer.cardplay_policy
+    result = trainer.train()
+    assert result.state.episodes == 0
+    assert result.state.bid_pretraining_updates == 1
+    assert result.state.learner_updates == 1
+    provenance = trainer.pretraining_history[0]["mc_continuation_provenance"]
+    assert isinstance(provenance, dict)
+    assert set(provenance) == {"composite_policy_id", "bidding", "doubling", "cardplay"}
     assert (
         config.fingerprint()
         == replace(
@@ -157,3 +219,27 @@ def test_full_game_loads_verified_cardplay_and_reuses_it_as_continuation(
     gc.collect()
     with pytest.raises(FullGameTrainingError, match="SHA-256 mismatch"):
         FullGameTrainer(replace(config, cardplay_checkpoint_sha256="0" * 64))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA FP16 autocast")
+def test_full_game_cuda_amp_updates_bid_and_cardplay_once(tmp_path: Path) -> None:
+    base = _with_tiny_cardplay_model(
+        tmp_path / "tiny-cardplay-cuda.json",
+        load_full_game_config(CONFIG_PATH),
+    )
+    trainer = FullGameTrainer(
+        replace(
+            base,
+            output_directory=tmp_path / "cuda-amp",
+            bid_pretraining_batches=0,
+            device="cuda:0",
+            amp=True,
+        )
+    )
+    trainer.curriculum.restore(BiddingStage.JOINT_WIN)
+    trainer.state.stage = BiddingStage.JOINT_WIN.value
+    set_cardplay_frozen(trainer.cardplay_model, False)
+    result = trainer.train()
+
+    assert result.state.episodes == 1
+    assert all(torch.isfinite(torch.tensor(value)) for value in result.losses.values())

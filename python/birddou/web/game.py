@@ -360,7 +360,7 @@ class GameService:
                 policy = load_full_game_checkpoint_policy(
                     "bird-dou-web-smoke",
                     checkpoint,
-                    self.repository_root / "configs" / "model" / "bid_head_v1.yaml",
+                    self.repository_root / "configs" / "model" / "bid_head_v2.yaml",
                     self.repository_root / "configs" / "model" / "bird_dou_v1.yaml",
                     self.repository_root / "configs" / "model" / "bird_dou_features_v1.yaml",
                     self.rules,

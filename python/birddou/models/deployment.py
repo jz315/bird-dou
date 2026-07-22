@@ -196,7 +196,7 @@ class DeploymentPolicy:
                 history_max_length=self._bid_head.config.history_max_length,
             ).to(self._device)
             with torch.inference_mode():
-                return int(torch.argmax(self._bid_head(bid_batch).policy_logits).item())
+                return int(torch.argmax(self._bid_head(bid_batch).mc_q).item())
         if observation["phase"] != "card_play":
             raise ValueError(f"deployment cannot act in phase {observation['phase']}")
         cardplay_batch = encode_ragged_batch(

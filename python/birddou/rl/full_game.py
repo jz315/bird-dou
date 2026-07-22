@@ -66,8 +66,8 @@ from birddou.rl.bird_dou_dmc import (
     load_bird_dou_dmc_config,
 )
 
-FULL_GAME_CONFIG_SCHEMA_VERSION = 3
-FULL_GAME_CHECKPOINT_SCHEMA_VERSION = 4
+FULL_GAME_CONFIG_SCHEMA_VERSION = 4
+FULL_GAME_CHECKPOINT_SCHEMA_VERSION = 5
 
 
 class FullGameTrainingError(RuntimeError):
@@ -111,8 +111,8 @@ class FullGameConfig:
             raise ValueError("unsupported full-game config schema")
         if self.trainer_mode != "full_game_joint":
             raise ValueError("full-game trainer_mode must be full_game_joint")
-        if self.episodes <= 0 or self.checkpoint_every <= 0:
-            raise ValueError("full-game episodes and checkpoint interval must be positive")
+        if self.episodes < 0 or self.checkpoint_every <= 0:
+            raise ValueError("full-game episodes must be non-negative and checkpoint positive")
         if not 0 <= self.master_seed < 1 << 64:
             raise ValueError("full-game master_seed must fit uint64")
         if self.learning_rate <= 0.0 or self.weight_decay < 0.0:
@@ -125,6 +125,8 @@ class FullGameConfig:
             raise ValueError("fixed_bid_warmup_episodes must be non-negative")
         if self.bid_pretraining_batches < 0 or self.bid_pretraining_hidden_samples <= 0:
             raise ValueError("full-game bid pretraining budget is invalid")
+        if self.episodes == 0 and self.bid_pretraining_batches == 0:
+            raise ValueError("full-game training requires episodes or bid pretraining")
         if self.maximum_redeals < 0:
             raise ValueError("maximum_redeals must be non-negative")
         if self.amp and not self.device.startswith("cuda"):
@@ -291,6 +293,29 @@ class FullGameTrainer:
             if config.allow_random_cardplay_smoke
             else self.cardplay_policy
         )
+        self.mc_continuation_policy = FixedBidPolicy(
+            policy_id=f"bid-mc-continuation:{self.continuation_policy_hash[:12]}",
+            cardplay=self.continuation_policy,
+            score_bid=config.initial_fixed_bid_score,
+            call=True,
+            rob=False,
+            double=False,
+        )
+        self.mc_continuation_provenance: dict[str, object] = {
+            "composite_policy_id": self.mc_continuation_policy.policy_id,
+            "bidding": {
+                "kind": "fixed_bid",
+                "score_bid": config.initial_fixed_bid_score,
+                "call": True,
+                "rob": False,
+            },
+            "doubling": {"kind": "fixed_double", "double": False},
+            "cardplay": {
+                "policy_id": self.continuation_policy.policy_id,
+                "policy_hash": self.continuation_policy_hash,
+                "policy_version": self.continuation_policy_version,
+            },
+        }
         self.continuation_model_architecture = (
             "longest_move_smoke_only"
             if config.allow_random_cardplay_smoke
@@ -419,7 +444,7 @@ class FullGameTrainer:
             labels = generate_initial_bid_mc_labels(
                 samples,
                 self.rules,
-                self.continuation_policy,
+                self.mc_continuation_policy,
                 self.bidding_config.monte_carlo,
             )
             reference = samples[0]
@@ -487,6 +512,7 @@ class FullGameTrainer:
                     "continuation_policy_version": self.continuation_policy_version,
                     "continuation_model_architecture": self.continuation_model_architecture,
                     "continuation_decision_mode": self.continuation_decision_mode,
+                    "mc_continuation_provenance": self.mc_continuation_provenance,
                     "rules_hash": self.rules_hash,
                     "loss": self.losses["bid"],
                 }
@@ -566,6 +592,8 @@ class FullGameTrainer:
                 self.bid_model,
                 self.rules,
                 self.config.device,
+                epsilon=self.bidding_config.collection_epsilon,
+                seed=self.config.master_seed,
             )
         for redeals in range(self.config.maximum_redeals + 1):
             active_seed = splitmix64((base_seed + redeals) & ((1 << 64) - 1))
@@ -606,6 +634,7 @@ class FullGameTrainer:
                 chosen,
                 terminal_win,
                 terminal_score,
+                bid_batch.action_offsets,
                 stage_loss,
             )
             cardplay_loss = self._cardplay_loss(episode)
@@ -748,6 +777,7 @@ class FullGameTrainer:
             "continuation_policy_version": self.continuation_policy_version,
             "continuation_model_architecture": self.continuation_model_architecture,
             "continuation_decision_mode": self.continuation_decision_mode,
+            "mc_continuation_provenance": self.mc_continuation_provenance,
             "bid_model": self.bid_model.state_dict(),
             "cardplay_model": self.cardplay_model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -789,6 +819,7 @@ class FullGameTrainer:
             "continuation_policy_version": self.continuation_policy_version,
             "continuation_model_architecture": self.continuation_model_architecture,
             "continuation_decision_mode": self.continuation_decision_mode,
+            "mc_continuation_provenance": self.mc_continuation_provenance,
             "frames": self.state.frames,
             "episodes": self.state.episodes,
             "learner_updates": self.state.learner_updates,
@@ -848,6 +879,7 @@ class FullGameTrainer:
             "continuation_policy_version": self.continuation_policy_version,
             "continuation_model_architecture": self.continuation_model_architecture,
             "continuation_decision_mode": self.continuation_decision_mode,
+            "mc_continuation_provenance": self.mc_continuation_provenance,
         }
         for key, value in expected.items():
             if checkpoint.get(key) != value:

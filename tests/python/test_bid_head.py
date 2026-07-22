@@ -16,7 +16,7 @@ from birddou.models.bid_head import (
 
 ROOT = Path(__file__).resolve().parents[2]
 RULES_PATH = ROOT / "configs" / "rules" / "canonical_full.yaml"
-MODEL_PATH = ROOT / "configs" / "model" / "bid_head_v1.yaml"
+MODEL_PATH = ROOT / "configs" / "model" / "bid_head_v2.yaml"
 
 
 def _rules() -> RuleConfig:
@@ -24,7 +24,7 @@ def _rules() -> RuleConfig:
 
 
 def _small_config() -> BidHeadConfig:
-    return BidHeadConfig(1, "bird_dou_bid_head_v1", 32, 1, 1, 4, 2, 3, 0.0)
+    return BidHeadConfig(2, "bird_dou_bid_head_v2", 32, 1, 1, 4, 2, 3, 0.0)
 
 
 def test_native_bidding_observation_encodes_only_public_information() -> None:
@@ -65,6 +65,8 @@ def test_bid_head_scores_ragged_actions_and_preserves_three_capacities() -> None
     output = BidHead(_small_config()).eval()(batch)
 
     assert output.policy_logits.shape == (sum(map(len, legal)),)
+    assert output.mc_q.shape == output.policy_logits.shape
+    assert output.mc_q is output.policy_logits
     assert output.win_probability.shape == output.policy_logits.shape
     assert output.expected_score.shape == output.policy_logits.shape
     for start, end in zip(batch.action_offsets[:-1], batch.action_offsets[1:], strict=True):
@@ -87,3 +89,25 @@ def test_bid_head_config_is_versioned_and_default_model_runs() -> None:
     output = BidHead(config).eval()(encode_bid_batch((observation,), (actions,), rules))
     assert output.policy_probability.shape == (len(actions),)
     assert torch.isfinite(output.policy_probability).all()
+
+
+def test_bid_head_cpu_bfloat16_autocast_preserves_fp32_crf_and_softmax() -> None:
+    rules = _rules()
+    environment = PyDdzEnv()
+    observation = environment.reset(17, rules)
+    actions = tuple(environment.legal_actions())
+    batch = encode_bid_batch((observation,), (actions,), rules)
+    model = BidHead(_small_config())
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        output = model(batch)
+        loss = output.mc_q.float().square().mean() + output.belief.log_partition.mean()
+    torch.autograd.backward((loss,))
+
+    assert output.mc_q.dtype == torch.bfloat16
+    assert output.policy_probability.dtype == torch.float32
+    assert output.belief.log_partition.dtype == torch.float32
+    assert loss.dtype == torch.float32 and torch.isfinite(loss)
+    assert all(
+        parameter.grad is None or torch.isfinite(parameter.grad).all()
+        for parameter in model.parameters()
+    )

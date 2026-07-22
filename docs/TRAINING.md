@@ -143,10 +143,13 @@ terminal returns. Hand-authored cooperation shaping is rejected. See
 The Bid Head is initialized against frozen Cardplay by branching every legal bid
 over information-set-consistent opponent/bottom samples and running native games to
 terminal. Research runs require a checksum- and version-pinned pretrained
-Cardplay checkpoint; initialization and the frozen joint stage execute that same
-policy. The explicit random-cardplay smoke exception uses `LongestMovePolicy` only
-to test mechanics. Full-game collection then retains both bidding and card-play
-decisions under the same terminal return. The curriculum unfreezes Cardplay only after
+Cardplay checkpoint. MC initialization wraps it with fixed phase-correct bidding
+and doubling, while the frozen joint stage executes the same Cardplay component.
+The explicit random-cardplay smoke exception uses `LongestMovePolicy` only to test
+mechanics. Full-game collection then retains both bidding and card-play decisions
+under the same terminal return. Bid collection is reproducible epsilon-greedy
+MC-Q, and joint learning regresses selected Q/win/score outcomes without a
+REINFORCE term. The curriculum unfreezes Cardplay only after
 completed-game, calibration, call-rate, and redeal gates pass; score loss is enabled
 in a later gated stage. Configuration, monitoring, and the empirical claim boundary
 are documented in [`BIDDING.md`](BIDDING.md).
@@ -161,6 +164,11 @@ It checkpoints Bid Head, Cardplay, optimizer, scheduler, AMP scaler, RNGs, polic
 version, curriculum stage, bidding calibration window, MC pretraining progress,
 and the League snapshot. `bid_pretraining_metrics.jsonl` records every resumable
 privileged-label update separately from complete-game `metrics.jsonl`.
+
+Mixed precision permits FP16/BF16 network activations but retains FP32 CRF dynamic
+programs, RMS variance, probability normalization, and loss reductions. CPU BF16
+gates run in ordinary CI; the CUDA-only full-game FP16 update runs when a GPU is
+available.
 
 ## M10 Proposal and search distillation
 
