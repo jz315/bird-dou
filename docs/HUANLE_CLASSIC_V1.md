@@ -237,5 +237,15 @@ R002 不声称 Rust 引擎已实现欢乐流程，也不以 JSON corpus 或 pars
 R003 已实现独立的 `MatchStateV2` / `DealAttemptStateV2` 协调层：每个 attempt
 保留子 seed、物理 deck、随机首叫候选、每个已接受的 `GameActionV2`、动作计数和 all-pass 摘要；all-pass
 自动生成下一次确定性发牌，且完整 decision history 可重放为相同 match state。
-它不实现明牌、叫抢、加倍、出牌或结算；这些阶段只能由后续 ticket 的
-authoritative 状态机向该协调层报告已验证结果。
+
+R004 在该协调层上实现 `PreDealReveal → DealingReveal → Calling`：发牌前声明按
+attempt seed 推导出的六种座位排列之一顺序执行；Rust 每轮向三家各发一张牌，
+未明牌者在每轮后作“现在明牌/继续收牌”决定。`RevealStateV2` 保存不可撤销的
+明牌席位、事件序首明牌者及最大倍率；发牌中倍率只能从
+`reveal.factor_by_cards_received` 读取。`RevealObservationV2` 只包含观察者自身
+手牌和已经明牌者的当前手牌，明确不包含底牌或未明牌对手手牌。17 轮结束时，
+首明牌者优先成为 `first_caller`，没有明牌者才使用已有的随机候选座位。
+
+R004 的边界止于 Calling 入口：它不实现 Call/PassCall、all-pass 有明牌直升地主、
+抢地主、底牌归属、收底牌后明牌、加倍、出牌或结算；这些阶段只能由后续 ticket 的
+authoritative 状态机实现。

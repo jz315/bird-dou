@@ -1,8 +1,8 @@
 use ddz_rules::{
     derive_attempt_seed, AttemptActionRecordV2, AttemptCompletionReasonV2, AttemptStatusV2,
     CallDecisionV2, DoubleDecisionV2, GameActionV2, HuanleMatchV2, MatchDecisionEventV2,
-    MatchError, RevealDecisionV2, RuleConfigV2, SystemEventV2, ATTEMPT_SEED_DERIVATION_ALGORITHM,
-    SHUFFLE_ALGORITHM,
+    MatchError, PhaseV2, RevealDecisionV2, RuleConfigV2, SystemEventV2,
+    ATTEMPT_SEED_DERIVATION_ALGORITHM, SHUFFLE_ALGORITHM,
 };
 
 const HUANLE_V2_FIXTURE: &str =
@@ -14,9 +14,42 @@ fn rules() -> RuleConfigV2 {
 }
 
 fn record_all_pass_calls(game: &mut HuanleMatchV2) {
+    drive_to_calling_without_reveal(game);
     for actor in 0..3 {
         game.record_accepted_action(actor, GameActionV2::Call(CallDecisionV2::PassCall))
             .unwrap();
+    }
+}
+
+fn drive_to_calling_without_reveal(game: &mut HuanleMatchV2) {
+    while game.phase() != PhaseV2::Calling {
+        match game.phase() {
+            PhaseV2::PreDealReveal => {
+                let actor = game
+                    .reveal_observation(0)
+                    .unwrap()
+                    .pre_deal_reveal_actor
+                    .unwrap();
+                game.apply_pre_deal_reveal(actor, RevealDecisionV2::Decline)
+                    .unwrap();
+            }
+            PhaseV2::DealingReveal => {
+                let pending = game
+                    .reveal_observation(0)
+                    .unwrap()
+                    .pending_during_deal_reveal;
+                for (actor, is_pending) in pending.iter().copied().enumerate() {
+                    if is_pending {
+                        game.apply_during_deal_reveal(
+                            u8::try_from(actor).expect("Huanle seat index fits in u8"),
+                            RevealDecisionV2::Decline,
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            PhaseV2::Calling => unreachable!("loop condition excludes calling"),
+        }
     }
 }
 
@@ -64,11 +97,11 @@ fn repeated_all_passes_preserve_every_attempt_and_can_reach_a_terminal_match_lif
 
     assert_eq!(game.state().attempt_index, 2);
     assert_eq!(game.state().completed_attempts.len(), 2);
-    assert_eq!(game.state().total_accepted_action_count, 6);
+    assert_eq!(game.state().total_accepted_action_count, 114);
     for (index, summary) in game.state().completed_attempts.iter().enumerate() {
         assert_eq!(summary.attempt_index, u32::try_from(index).unwrap());
-        assert_eq!(summary.accepted_action_count, 3);
-        assert_eq!(summary.action_history.len(), 3);
+        assert_eq!(summary.accepted_action_count, 57);
+        assert_eq!(summary.action_history.len(), 57);
         assert_eq!(
             summary.completion_reason,
             AttemptCompletionReasonV2::AllPass
@@ -83,6 +116,7 @@ fn repeated_all_passes_preserve_every_attempt_and_can_reach_a_terminal_match_lif
         derive_attempt_seed(91, game.state().attempt_index)
     );
 
+    drive_to_calling_without_reveal(&mut game);
     game.record_accepted_action(1, GameActionV2::Call(CallDecisionV2::CallLandlord))
         .unwrap();
     game.record_landlord_resolution(1).unwrap();
@@ -91,14 +125,14 @@ fn repeated_all_passes_preserve_every_attempt_and_can_reach_a_terminal_match_lif
     game.complete_after_authoritative_card_play(2).unwrap();
 
     assert!(game.state().terminal);
-    assert_eq!(game.state().total_accepted_action_count, 8);
+    assert_eq!(game.state().total_accepted_action_count, 170);
     assert_eq!(
         game.state().current_attempt.status,
         AttemptStatusV2::LandlordResolved { landlord: 1 }
     );
     assert_eq!(game.state().final_result.unwrap().winner, 2);
-    assert_eq!(game.decision_events().len(), 12);
-    assert_eq!(game.system_events().len(), 7);
+    assert_eq!(game.decision_events().len(), 174);
+    assert_eq!(game.system_events().len(), 61);
 }
 
 #[test]
@@ -106,6 +140,7 @@ fn deterministic_decision_replay_reconstructs_all_attempts_and_action_budgets_ex
     let mut original = HuanleMatchV2::new(4242, &rules()).unwrap();
     record_all_pass_calls(&mut original);
     original.resolve_no_reveal_all_pass().unwrap();
+    drive_to_calling_without_reveal(&mut original);
     original
         .record_accepted_action(0, GameActionV2::Call(CallDecisionV2::CallLandlord))
         .unwrap();
@@ -118,7 +153,7 @@ fn deterministic_decision_replay_reconstructs_all_attempts_and_action_budgets_ex
     let replay = HuanleMatchV2::replay(4242, &rules(), original.decision_events()).unwrap();
 
     assert_eq!(replay, original);
-    assert_eq!(replay.state().total_accepted_action_count, 5);
+    assert_eq!(replay.state().total_accepted_action_count, 113);
 }
 
 #[test]
@@ -143,8 +178,13 @@ fn invalid_lifecycle_transitions_are_transactional() {
     assert_eq!(game, initial);
 
     let mut revealed = HuanleMatchV2::new(13, &rules()).unwrap();
+    let first_actor = revealed
+        .reveal_observation(0)
+        .unwrap()
+        .pre_deal_reveal_actor
+        .unwrap();
     revealed
-        .record_accepted_action(0, GameActionV2::PreDealReveal(RevealDecisionV2::Reveal))
+        .apply_pre_deal_reveal(first_actor, RevealDecisionV2::Reveal)
         .unwrap();
     let before_invalid_all_pass = revealed.clone();
     assert!(matches!(
@@ -153,6 +193,7 @@ fn invalid_lifecycle_transitions_are_transactional() {
     ));
     assert_eq!(revealed, before_invalid_all_pass);
 
+    drive_to_calling_without_reveal(&mut game);
     game.record_accepted_action(0, GameActionV2::Call(CallDecisionV2::CallLandlord))
         .unwrap();
     game.record_landlord_resolution(0).unwrap();
@@ -183,13 +224,18 @@ fn replay_rejects_events_that_target_the_wrong_attempt_or_tamper_with_sequence()
         })
     ));
 
+    let pre_deal_actor = HuanleMatchV2::new(8, &rules())
+        .unwrap()
+        .state()
+        .current_attempt
+        .pre_deal_reveal_order[0];
     let tampered_sequence = [MatchDecisionEventV2::PlayerActionAccepted {
         sequence: 7,
         attempt_index: 0,
         action: AttemptActionRecordV2 {
             sequence: 0,
-            actor: 0,
-            action: GameActionV2::Call(CallDecisionV2::PassCall),
+            actor: pre_deal_actor,
+            action: GameActionV2::PreDealReveal(RevealDecisionV2::Decline),
         },
     }];
     assert!(matches!(

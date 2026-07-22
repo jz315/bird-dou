@@ -264,12 +264,28 @@ count and audit data enter `completed_attempts`, then a `Redeal` system event
 starts the next child seed under the same match. There is no game-rule retry
 limit in this layer.
 
+R004 makes the early attempt lifecycle authoritative. `PreDealReveal` follows
+a deterministic six-permutation declaration order derived from the attempt
+seed and pinned as `deal_seed_permutation_v1`. After all three declarations,
+Rust deals one card to each seat per round
+and records only card-count system events, never card identities. In
+`DealingReveal`, every still-hidden seat has one reveal-or-continue decision
+per round. `RevealStateV2` retains per-seat factors, the event-ordered first
+revealer, and the maximum (not product) factor. After 17 rounds, the match
+opens `Calling` with the first revealer as `first_caller`, or the seeded
+candidate when nobody revealed.
+
+`RevealObservationV2` is an intentionally narrow safe projection for this
+stage: it exposes the observer's own partial/full hand and the current hand of
+revealed seats only. It has no deck, bottom-card collection, or unrevealed
+opponent hand field. It is not the full v2 observation schema, unknown-pool,
+serialization, or undo implementation reserved for R009.
+
 The coordinator has a replayable decision log and a separately ordered system
-log. It accepts only already-validated phase outcomes; R003 does not use a
-synthetic call, rob, play, or settlement result. Later phase state machines
-attribute accepted actions, resolve the landlord, and report card-play
-completion. This preserves every attempt's action budget while keeping phase
-legality in its owning ticket.
+log. R004 validates reveal actions directly; direct generic recording rejects
+pre-deal and during-deal reveal variants. Call, rob, bottom, double, play, and
+settlement remain later phase state machines. This preserves every attempt's
+action budget while keeping phase legality in its owning ticket.
 
 ## `douzero_post_bid`
 

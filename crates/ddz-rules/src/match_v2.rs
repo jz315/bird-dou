@@ -8,13 +8,92 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use ddz_core::{CardId, Move, Seat};
+use ddz_core::{CardId, Move, Seat, CARD_COUNT};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     derive_attempt_seed, shuffled_deck_for_seed, RuleConfigError, RuleConfigV2, RuleProfile,
     ATTEMPT_SEED_DERIVATION_ALGORITHM, PLAYER_COUNT, SHUFFLE_ALGORITHM,
 };
+
+const HUANLE_CARDS_PER_PLAYER: usize = 17;
+const HUANLE_BOTTOM_CARD_COUNT: usize = 3;
+const HUANLE_DEALT_CARD_COUNT: usize = HUANLE_CARDS_PER_PLAYER * PLAYER_COUNT;
+
+/// Stable derivation used for the randomized pre-deal declaration order.
+pub const PRE_DEAL_REVEAL_ORDER_ALGORITHM: &str = "deal_seed_permutation_v1";
+
+/// Authoritative phase reached by the R003/R004 Huanle lifecycle.
+///
+/// R004 deliberately stops at the `Calling` boundary. The call, rob, bottom,
+/// doubling, card-play, and terminal transitions are introduced by their
+/// owning tickets instead of being guessed here.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseV2 {
+    /// Every seat makes its deterministic-order pre-deal reveal declaration.
+    PreDealReveal,
+    /// One card per seat has been dealt for the current round and unrevealed
+    /// seats may reveal or continue receiving cards.
+    DealingReveal,
+    /// All seventeen cards have been dealt and R005 owns the next transition.
+    Calling,
+}
+
+/// Irrevocable reveal information accumulated before the call phase.
+///
+/// A zero entry in `reveal_factor_by_seat` means that the seat has not
+/// revealed. `maximum_factor` is one until the first reveal, so it is safe to
+/// use as the neutral multiplicative factor in later settlement code.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevealStateV2 {
+    /// Whether each seat has irrevocably revealed its hand.
+    pub revealed: [bool; PLAYER_COUNT],
+    /// Reveal factor for each seat, or zero when the seat is still hidden.
+    pub reveal_factor_by_seat: [u32; PLAYER_COUNT],
+    /// First seat to reveal, determined by accepted action-event order.
+    pub first_revealer: Option<Seat>,
+    /// Within-attempt action sequence of the first reveal.
+    pub first_reveal_sequence: Option<u64>,
+    /// Maximum of all accepted reveal factors, or one before any reveal.
+    pub maximum_factor: u32,
+}
+
+/// Safe, reveal-phase observation for one player.
+///
+/// This is intentionally narrower than the full `ObservationV2` planned for
+/// R009. It provides exactly the visibility R004 needs: the observer's own
+/// partial/full hand and opponents' hands only after those opponents reveal.
+/// It never includes bottom cards or an unrevealed opponent hand.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevealObservationV2 {
+    /// Current authoritative pre-call phase.
+    pub phase: PhaseV2,
+    /// Seat for which this projection was constructed.
+    pub observer: Seat,
+    /// The observer's own currently dealt partial or full hand.
+    pub own_hand: Vec<CardId>,
+    /// Number of cards currently dealt to each seat.
+    pub cards_received: [u8; PLAYER_COUNT],
+    /// Current hand of each revealed seat; every hidden seat has an empty list.
+    pub public_revealed_hands: [Vec<CardId>; PLAYER_COUNT],
+    /// Public per-seat reveal flags.
+    pub revealed: [bool; PLAYER_COUNT],
+    /// First revealed seat, if any.
+    pub first_revealer: Option<Seat>,
+    /// Public maximum reveal factor rather than a product of reveal factors.
+    pub maximum_reveal_factor: u32,
+    /// Seats that may make a during-deal reveal decision in the current round.
+    pub pending_during_deal_reveal: [bool; PLAYER_COUNT],
+    /// The only seat that may make the next deterministic pre-deal declaration.
+    pub pre_deal_reveal_actor: Option<Seat>,
+    /// First caller resolved at the R004/R005 boundary once dealing is complete.
+    pub first_caller: Option<Seat>,
+    /// Bottom cards remain hidden until R007 resolves a landlord.
+    pub bottom_visible: bool,
+}
 
 /// Lifecycle status for the current Huanle deal attempt.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -118,6 +197,29 @@ pub struct DealAttemptStateV2 {
     pub first_caller_candidate: Seat,
     /// Authoritative physical-card order for later partial dealing and replay.
     pub deck: Vec<CardId>,
+    /// Current authoritative phase before the R005 call state machine starts.
+    pub phase: PhaseV2,
+    /// Deterministic declaration order used by the pre-deal reveal phase.
+    pub pre_deal_reveal_order: [Seat; PLAYER_COUNT],
+    /// Stable identifier for the declaration-order derivation.
+    pub pre_deal_reveal_order_algorithm: String,
+    /// Number of declarations already accepted from `pre_deal_reveal_order`.
+    pub pre_deal_reveal_cursor: u8,
+    /// Number of cards dealt to each seat so far; R004 always advances them together.
+    pub cards_received: [u8; PLAYER_COUNT],
+    /// R004 reveal state, including the first revealer and maximum factor.
+    pub reveal: RevealStateV2,
+    /// Seats still entitled to choose reveal/continue for the current dealt round.
+    pub pending_during_deal_reveal: [bool; PLAYER_COUNT],
+    /// First calling seat, available only after all seventeen rounds complete.
+    pub first_caller: Option<Seat>,
+    /// Server-authoritative partial/full physical hands. This is deliberately
+    /// private so network code must use `reveal_observation` rather than
+    /// accidentally returning hidden opponent cards.
+    hands: [Vec<CardId>; PLAYER_COUNT],
+    /// Server-authoritative bottom cards. They remain absent from every R004
+    /// observation and are owned by the R007 bottom-reveal implementation.
+    bottom_cards: [CardId; HUANLE_BOTTOM_CARD_COUNT],
     /// Count of accepted player actions in this attempt across all implemented phases.
     pub accepted_action_count: u64,
     /// Complete accepted player-action history for this attempt.
@@ -146,6 +248,14 @@ pub struct AttemptSummaryV2 {
     pub shuffle_algorithm: String,
     /// Stored fallback first-call seat for audit and replay.
     pub first_caller_candidate: Seat,
+    /// Phase at which the completed attempt was closed.
+    pub phase_at_completion: PhaseV2,
+    /// Dealing progress retained for audit; all-pass attempts must be fully dealt.
+    pub cards_received: [u8; PLAYER_COUNT],
+    /// Reveal state retained for audit; an all-pass summary contains no reveal.
+    pub reveal: RevealStateV2,
+    /// First caller resolved before the all-pass disposition.
+    pub first_caller: Option<Seat>,
     /// All accepted player actions attributed to this attempt.
     pub accepted_action_count: u64,
     /// Complete accepted player-action history for this closed attempt.
@@ -258,6 +368,22 @@ pub enum SystemEventV2 {
         /// Fallback first-call candidate retained for later calling.
         first_caller_candidate: Seat,
     },
+    /// Rust dealt one deterministic card to every seat for a reveal round.
+    /// The event contains no card identities; those remain server state and
+    /// are derived from the attempt seed during replay.
+    DealingRoundDealt {
+        /// Attempt receiving the round.
+        attempt_index: u32,
+        /// One-based number of cards now held by every seat.
+        cards_received: u8,
+    },
+    /// Seventeen rounds completed and the first caller became public.
+    CallingOpened {
+        /// Attempt that reached the call boundary.
+        attempt_index: u32,
+        /// First caller selected from the first revealer or seeded fallback.
+        first_caller: Seat,
+    },
     /// A no-reveal all-pass transitioned within the same match to another attempt.
     Redeal {
         /// Attempt that closed with all pass.
@@ -290,6 +416,11 @@ pub struct SystemEventRecordV2 {
 /// Authoritative R003 match coordinator for the Huanle v2 profile.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct HuanleMatchV2 {
+    /// Validated immutable rules used by the authoritative reveal transition.
+    /// State/replay identity remains the public config ID and hash in
+    /// `MatchStateV2`; this retained copy prevents any caller-owned config
+    /// object from changing a live match after construction.
+    rules: RuleConfigV2,
     state: MatchStateV2,
     decision_events: Vec<MatchDecisionEventV2>,
     system_events: Vec<SystemEventRecordV2>,
@@ -327,6 +458,7 @@ impl HuanleMatchV2 {
             final_result: None,
         };
         let mut game = Self {
+            rules: *rules,
             state,
             decision_events: Vec::new(),
             system_events: Vec::new(),
@@ -336,7 +468,11 @@ impl HuanleMatchV2 {
         Ok(game)
     }
 
-    /// Return immutable lifecycle state for observations, replay, and audit.
+    /// Return immutable authoritative lifecycle state for replay and server-side audit.
+    ///
+    /// This contains the deterministic deck and must never be serialized as a
+    /// player or web response. Use [`Self::reveal_observation`] for an
+    /// information-safe R004 projection.
     #[must_use]
     pub const fn state(&self) -> &MatchStateV2 {
         &self.state
@@ -354,6 +490,140 @@ impl HuanleMatchV2 {
         &self.system_events
     }
 
+    /// Return the current pre-call phase.
+    #[must_use]
+    pub const fn phase(&self) -> PhaseV2 {
+        self.state.current_attempt.phase
+    }
+
+    /// Build the information-safe R004 reveal projection for one observer.
+    ///
+    /// The result includes the observer's own partial/full hand and only hands
+    /// made public by an irrevocable reveal. Bottom cards and every unrevealed
+    /// opponent hand are omitted by construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MatchError::InvalidSeat`] when `observer` is outside the
+    /// three-seat Huanle table.
+    pub fn reveal_observation(&self, observer: Seat) -> Result<RevealObservationV2, MatchError> {
+        validate_seat(observer)?;
+        let attempt = &self.state.current_attempt;
+        let observer_index = usize::from(observer);
+        let public_revealed_hands = std::array::from_fn(|seat| {
+            if attempt.reveal.revealed[seat] {
+                attempt.hands[seat].clone()
+            } else {
+                Vec::new()
+            }
+        });
+        let pre_deal_reveal_actor = if attempt.phase == PhaseV2::PreDealReveal {
+            attempt
+                .pre_deal_reveal_order
+                .get(usize::from(attempt.pre_deal_reveal_cursor))
+                .copied()
+        } else {
+            None
+        };
+
+        Ok(RevealObservationV2 {
+            phase: attempt.phase,
+            observer,
+            own_hand: attempt.hands[observer_index].clone(),
+            cards_received: attempt.cards_received,
+            public_revealed_hands,
+            revealed: attempt.reveal.revealed,
+            first_revealer: attempt.reveal.first_revealer,
+            maximum_reveal_factor: attempt.reveal.maximum_factor,
+            pending_during_deal_reveal: attempt.pending_during_deal_reveal,
+            pre_deal_reveal_actor,
+            first_caller: attempt.first_caller,
+            bottom_visible: false,
+        })
+    }
+
+    /// Enumerate reveal actions that are currently legal for one seat.
+    ///
+    /// Calling and later-phase actions intentionally remain absent: their
+    /// authoritative state machines belong to later tickets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid seat or a terminal match.
+    pub fn legal_reveal_actions(&self, actor: Seat) -> Result<Vec<GameActionV2>, MatchError> {
+        self.ensure_not_terminal()?;
+        validate_seat(actor)?;
+        let attempt = &self.state.current_attempt;
+        let permitted = match attempt.phase {
+            PhaseV2::PreDealReveal => attempt
+                .pre_deal_reveal_order
+                .get(usize::from(attempt.pre_deal_reveal_cursor))
+                .is_some_and(|expected| *expected == actor),
+            PhaseV2::DealingReveal => attempt.pending_during_deal_reveal[usize::from(actor)],
+            PhaseV2::Calling => false,
+        };
+        if !permitted {
+            return Ok(Vec::new());
+        }
+        let actions = match attempt.phase {
+            PhaseV2::PreDealReveal => vec![
+                GameActionV2::PreDealReveal(RevealDecisionV2::Reveal),
+                GameActionV2::PreDealReveal(RevealDecisionV2::Decline),
+            ],
+            PhaseV2::DealingReveal => vec![
+                GameActionV2::DuringDealReveal(RevealDecisionV2::Reveal),
+                GameActionV2::DuringDealReveal(RevealDecisionV2::Decline),
+            ],
+            PhaseV2::Calling => Vec::new(),
+        };
+        Ok(actions)
+    }
+
+    /// Apply the next deterministic-order pre-deal reveal declaration.
+    ///
+    /// Once all three declarations are accepted, Rust automatically deals the
+    /// first round and opens the relevant during-deal reveal decisions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an out-of-order actor, incorrect phase, invalid
+    /// seat, terminal match, or arithmetic/event-sequence overflow. Errors are
+    /// transactional and leave the match unchanged.
+    pub fn apply_pre_deal_reveal(
+        &mut self,
+        actor: Seat,
+        decision: RevealDecisionV2,
+    ) -> Result<(), MatchError> {
+        let mut next = self.clone();
+        next.apply_pre_deal_reveal_inner(actor, decision)?;
+        next.validate()?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Apply one currently pending during-deal reveal decision.
+    ///
+    /// Every unrevealed seat receives one decision after each authoritative
+    /// dealing round. After the final pending decision, Rust either deals the
+    /// next round or opens `Calling` once all seventeen cards are dealt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-pending seat, incorrect phase, invalid seat,
+    /// terminal match, or arithmetic/event-sequence overflow. Errors are
+    /// transactional and leave the match unchanged.
+    pub fn apply_during_deal_reveal(
+        &mut self,
+        actor: Seat,
+        decision: RevealDecisionV2,
+    ) -> Result<(), MatchError> {
+        let mut next = self.clone();
+        next.apply_during_deal_reveal_inner(actor, decision)?;
+        next.validate()?;
+        *self = next;
+        Ok(())
+    }
+
     /// Record one accepted player action without imposing a game-rule cap.
     ///
     /// Phase state machines call this after, and only after, an action has been accepted. It is
@@ -361,45 +631,27 @@ impl HuanleMatchV2 {
     ///
     /// # Errors
     ///
-    /// Returns an error for a terminal match, invalid actor, or arithmetic/sequence overflow.
+    /// Reveal actions are intentionally rejected here: R004 must validate them
+    /// through [`Self::apply_pre_deal_reveal`] or
+    /// [`Self::apply_during_deal_reveal`]. Until their own tickets land, this
+    /// method remains a narrow audit seam for validated later-phase actions at
+    /// the `Calling` boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a terminal match, invalid actor, non-calling phase,
+    /// a direct reveal action, or arithmetic/sequence overflow. Errors are
+    /// transactional.
     pub fn record_accepted_action(
         &mut self,
         actor: Seat,
         action: GameActionV2,
     ) -> Result<(), MatchError> {
-        self.ensure_not_terminal()?;
-        validate_seat(actor)?;
-        let attempt_count = self
-            .state
-            .current_attempt
-            .accepted_action_count
-            .checked_add(1)
-            .ok_or(MatchError::ActionCountOverflow)?;
-        let total_count = self
-            .state
-            .total_accepted_action_count
-            .checked_add(1)
-            .ok_or(MatchError::ActionCountOverflow)?;
-        let action_record = AttemptActionRecordV2 {
-            sequence: u64::try_from(self.state.current_attempt.action_history.len())
-                .map_err(|_| MatchError::EventSequenceOverflow)?,
-            actor,
-            action,
-        };
-        let event = MatchDecisionEventV2::PlayerActionAccepted {
-            sequence: self.next_decision_sequence()?,
-            attempt_index: self.state.attempt_index,
-            action: action_record.clone(),
-        };
-
-        self.state.current_attempt.accepted_action_count = attempt_count;
-        self.state.total_accepted_action_count = total_count;
-        self.state
-            .current_attempt
-            .action_history
-            .push(action_record);
-        self.decision_events.push(event);
-        self.validate()
+        let mut next = self.clone();
+        next.record_accepted_action_inner(actor, action)?;
+        next.validate()?;
+        *self = next;
+        Ok(())
     }
 
     /// Close a no-reveal all-pass attempt and automatically begin the next deterministic attempt.
@@ -413,6 +665,14 @@ impl HuanleMatchV2 {
     /// Returns an error if no accepted action supports the disposition, a landlord was already
     /// resolved, the match is terminal, or an index/sequence would overflow.
     pub fn resolve_no_reveal_all_pass(&mut self) -> Result<(), MatchError> {
+        let mut next = self.clone();
+        next.resolve_no_reveal_all_pass_inner()?;
+        next.validate()?;
+        *self = next;
+        Ok(())
+    }
+
+    fn resolve_no_reveal_all_pass_inner(&mut self) -> Result<(), MatchError> {
         self.ensure_not_terminal()?;
         self.ensure_unresolved_attempt()?;
         if self.state.current_attempt.accepted_action_count == 0 {
@@ -427,6 +687,7 @@ impl HuanleMatchV2 {
         {
             return Err(MatchError::AllPassAfterReveal);
         }
+        self.require_phase(PhaseV2::Calling)?;
 
         let from_attempt = self.state.attempt_index;
         let to_attempt = from_attempt
@@ -437,6 +698,10 @@ impl HuanleMatchV2 {
             deal_seed: self.state.current_attempt.deal_seed,
             shuffle_algorithm: self.state.current_attempt.shuffle_algorithm.clone(),
             first_caller_candidate: self.state.current_attempt.first_caller_candidate,
+            phase_at_completion: self.state.current_attempt.phase,
+            cards_received: self.state.current_attempt.cards_received,
+            reveal: self.state.current_attempt.reveal,
+            first_caller: self.state.current_attempt.first_caller,
             accepted_action_count: self.state.current_attempt.accepted_action_count,
             action_history: self.state.current_attempt.action_history.clone(),
             completion_reason: AttemptCompletionReasonV2::AllPass,
@@ -470,7 +735,7 @@ impl HuanleMatchV2 {
                 first_caller_candidate: self.state.current_attempt.first_caller_candidate,
             },
         });
-        self.validate()
+        Ok(())
     }
 
     /// Record a landlord resolution produced by a future validated call/rob state machine.
@@ -480,9 +745,18 @@ impl HuanleMatchV2 {
     /// Returns an error for an invalid seat, absent accepted action evidence, an already resolved
     /// attempt, or a terminal match.
     pub fn record_landlord_resolution(&mut self, landlord: Seat) -> Result<(), MatchError> {
+        let mut next = self.clone();
+        next.record_landlord_resolution_inner(landlord)?;
+        next.validate()?;
+        *self = next;
+        Ok(())
+    }
+
+    fn record_landlord_resolution_inner(&mut self, landlord: Seat) -> Result<(), MatchError> {
         self.ensure_not_terminal()?;
         self.ensure_unresolved_attempt()?;
         validate_seat(landlord)?;
+        self.require_phase(PhaseV2::Calling)?;
         if self.state.current_attempt.accepted_action_count == 0 {
             return Err(MatchError::LandlordResolutionWithoutAcceptedActions);
         }
@@ -499,7 +773,7 @@ impl HuanleMatchV2 {
         self.state.current_attempt.status = AttemptStatusV2::LandlordResolved { landlord };
         self.decision_events.push(decision);
         self.system_events.push(system);
-        self.validate()
+        Ok(())
     }
 
     /// Mark the match terminal after a future authoritative card-play state machine reports a winner.
@@ -511,6 +785,17 @@ impl HuanleMatchV2 {
     ///
     /// Returns an error for an invalid winner, a missing landlord resolution, or a terminal match.
     pub fn complete_after_authoritative_card_play(
+        &mut self,
+        winner: Seat,
+    ) -> Result<(), MatchError> {
+        let mut next = self.clone();
+        next.complete_after_authoritative_card_play_inner(winner)?;
+        next.validate()?;
+        *self = next;
+        Ok(())
+    }
+
+    fn complete_after_authoritative_card_play_inner(
         &mut self,
         winner: Seat,
     ) -> Result<(), MatchError> {
@@ -538,7 +823,7 @@ impl HuanleMatchV2 {
         });
         self.decision_events.push(decision);
         self.system_events.push(system);
-        self.validate()
+        Ok(())
     }
 
     /// Reconstruct a match from its deterministic seed, v2 rules, and decision history.
@@ -561,7 +846,16 @@ impl HuanleMatchV2 {
                     ..
                 } => {
                     replay.require_current_attempt(attempt_index)?;
-                    replay.record_accepted_action(action.actor, action.action)?;
+                    let actor = action.actor;
+                    match action.action {
+                        GameActionV2::PreDealReveal(decision) => {
+                            replay.apply_pre_deal_reveal(actor, decision)?;
+                        }
+                        GameActionV2::DuringDealReveal(decision) => {
+                            replay.apply_during_deal_reveal(actor, decision)?;
+                        }
+                        action => replay.record_accepted_action(actor, action)?,
+                    }
                 }
                 MatchDecisionEventV2::AllPass { attempt_index, .. } => {
                     replay.require_current_attempt(attempt_index)?;
@@ -639,7 +933,7 @@ impl HuanleMatchV2 {
         }
 
         let mut total_actions = state.current_attempt.accepted_action_count;
-        validate_attempt(state.match_seed, &state.current_attempt)?;
+        validate_attempt(state.match_seed, &state.current_attempt, &self.rules)?;
         for (position, summary) in state.completed_attempts.iter().enumerate() {
             let expected_index = u32::try_from(position)
                 .map_err(|_| MatchError::StateInvariant("attempt position exceeds u32"))?;
@@ -648,7 +942,7 @@ impl HuanleMatchV2 {
                     "completed attempt summaries must be contiguous",
                 ));
             }
-            validate_summary(state.match_seed, summary)?;
+            validate_summary(state.match_seed, summary, &self.rules)?;
             total_actions = total_actions
                 .checked_add(summary.accepted_action_count)
                 .ok_or(MatchError::ActionCountOverflow)?;
@@ -714,6 +1008,282 @@ impl HuanleMatchV2 {
         }
     }
 
+    fn apply_pre_deal_reveal_inner(
+        &mut self,
+        actor: Seat,
+        decision: RevealDecisionV2,
+    ) -> Result<(), MatchError> {
+        self.ensure_not_terminal()?;
+        validate_seat(actor)?;
+        self.require_phase(PhaseV2::PreDealReveal)?;
+
+        let cursor = usize::from(self.state.current_attempt.pre_deal_reveal_cursor);
+        let expected = self
+            .state
+            .current_attempt
+            .pre_deal_reveal_order
+            .get(cursor)
+            .copied()
+            .ok_or(MatchError::StateInvariant(
+                "pre-deal reveal cursor must point to a declaration seat",
+            ))?;
+        if actor != expected {
+            return Err(MatchError::PreDealRevealOutOfTurn {
+                expected,
+                actual: actor,
+            });
+        }
+
+        let action = GameActionV2::PreDealReveal(decision);
+        let action_record = self.append_accepted_action(actor, action)?;
+        if decision == RevealDecisionV2::Reveal {
+            self.accept_reveal(
+                actor,
+                self.rules.reveal.before_deal_factor,
+                action_record.sequence,
+            )?;
+        }
+
+        self.state.current_attempt.pre_deal_reveal_cursor = self
+            .state
+            .current_attempt
+            .pre_deal_reveal_cursor
+            .checked_add(1)
+            .ok_or(MatchError::EventSequenceOverflow)?;
+        if usize::from(self.state.current_attempt.pre_deal_reveal_cursor) == PLAYER_COUNT {
+            self.state.current_attempt.phase = PhaseV2::DealingReveal;
+            self.deal_until_decision_or_calling()?;
+        }
+        Ok(())
+    }
+
+    fn apply_during_deal_reveal_inner(
+        &mut self,
+        actor: Seat,
+        decision: RevealDecisionV2,
+    ) -> Result<(), MatchError> {
+        self.ensure_not_terminal()?;
+        validate_seat(actor)?;
+        self.require_phase(PhaseV2::DealingReveal)?;
+        let actor_index = usize::from(actor);
+        if !self.state.current_attempt.pending_during_deal_reveal[actor_index] {
+            return Err(MatchError::DuringDealRevealNotPending { seat: actor });
+        }
+        let factor_index = usize::from(self.state.current_attempt.cards_received[actor_index]);
+        let factor = *self
+            .rules
+            .reveal
+            .factor_by_cards_received
+            .get(factor_index)
+            .ok_or(MatchError::StateInvariant(
+                "during-deal reveal factor index must be within the explicit schedule",
+            ))?;
+
+        let action = GameActionV2::DuringDealReveal(decision);
+        let action_record = self.append_accepted_action(actor, action)?;
+        if decision == RevealDecisionV2::Reveal {
+            self.accept_reveal(actor, factor, action_record.sequence)?;
+        }
+        self.state.current_attempt.pending_during_deal_reveal[actor_index] = false;
+
+        if self
+            .state
+            .current_attempt
+            .pending_during_deal_reveal
+            .iter()
+            .any(|pending| *pending)
+        {
+            return Ok(());
+        }
+        if self.state.current_attempt.cards_received[0]
+            == u8::try_from(HUANLE_CARDS_PER_PLAYER).expect("Huanle card count fits in u8")
+        {
+            self.open_calling()?;
+        } else {
+            self.deal_until_decision_or_calling()?;
+        }
+        Ok(())
+    }
+
+    fn record_accepted_action_inner(
+        &mut self,
+        actor: Seat,
+        action: GameActionV2,
+    ) -> Result<(), MatchError> {
+        self.ensure_not_terminal()?;
+        validate_seat(actor)?;
+        if action.is_r004_reveal_action() {
+            return Err(MatchError::RevealActionRequiresStateMachine);
+        }
+        self.require_phase(PhaseV2::Calling)?;
+        self.append_accepted_action(actor, action)?;
+        Ok(())
+    }
+
+    fn append_accepted_action(
+        &mut self,
+        actor: Seat,
+        action: GameActionV2,
+    ) -> Result<AttemptActionRecordV2, MatchError> {
+        let attempt_count = self
+            .state
+            .current_attempt
+            .accepted_action_count
+            .checked_add(1)
+            .ok_or(MatchError::ActionCountOverflow)?;
+        let total_count = self
+            .state
+            .total_accepted_action_count
+            .checked_add(1)
+            .ok_or(MatchError::ActionCountOverflow)?;
+        let action_record = AttemptActionRecordV2 {
+            sequence: u64::try_from(self.state.current_attempt.action_history.len())
+                .map_err(|_| MatchError::EventSequenceOverflow)?,
+            actor,
+            action,
+        };
+        let event = MatchDecisionEventV2::PlayerActionAccepted {
+            sequence: self.next_decision_sequence()?,
+            attempt_index: self.state.attempt_index,
+            action: action_record.clone(),
+        };
+
+        self.state.current_attempt.accepted_action_count = attempt_count;
+        self.state.total_accepted_action_count = total_count;
+        self.state
+            .current_attempt
+            .action_history
+            .push(action_record.clone());
+        self.decision_events.push(event);
+        Ok(action_record)
+    }
+
+    fn accept_reveal(
+        &mut self,
+        actor: Seat,
+        factor: u32,
+        action_sequence: u64,
+    ) -> Result<(), MatchError> {
+        let actor_index = usize::from(actor);
+        let reveal = &mut self.state.current_attempt.reveal;
+        if reveal.revealed[actor_index] {
+            return Err(MatchError::RevealAlreadyIrrevocable { seat: actor });
+        }
+        if factor <= 1 {
+            return Err(MatchError::StateInvariant(
+                "accepted reveal factor must be a configured multiplier above one",
+            ));
+        }
+        reveal.revealed[actor_index] = true;
+        reveal.reveal_factor_by_seat[actor_index] = factor;
+        reveal.maximum_factor = reveal.maximum_factor.max(factor);
+        if reveal.first_revealer.is_none() {
+            reveal.first_revealer = Some(actor);
+            reveal.first_reveal_sequence = Some(action_sequence);
+        }
+        Ok(())
+    }
+
+    fn deal_until_decision_or_calling(&mut self) -> Result<(), MatchError> {
+        loop {
+            self.deal_one_round()?;
+            if self
+                .state
+                .current_attempt
+                .pending_during_deal_reveal
+                .iter()
+                .any(|pending| *pending)
+            {
+                return Ok(());
+            }
+            if self.state.current_attempt.cards_received[0]
+                == u8::try_from(HUANLE_CARDS_PER_PLAYER).expect("Huanle card count fits in u8")
+            {
+                return self.open_calling();
+            }
+        }
+    }
+
+    fn deal_one_round(&mut self) -> Result<(), MatchError> {
+        self.require_phase(PhaseV2::DealingReveal)?;
+        let current_cards_received = self.state.current_attempt.cards_received;
+        if !current_cards_received
+            .iter()
+            .all(|count| *count == current_cards_received[0])
+        {
+            return Err(MatchError::StateInvariant(
+                "R004 deals one card to every seat in lockstep",
+            ));
+        }
+        let current = usize::from(current_cards_received[0]);
+        if current >= HUANLE_CARDS_PER_PLAYER {
+            return Err(MatchError::StateInvariant(
+                "cannot deal more than seventeen Huanle cards to one seat",
+            ));
+        }
+        let next = u8::try_from(current + 1).expect("Huanle card count fits in u8");
+        let start = current
+            .checked_mul(PLAYER_COUNT)
+            .ok_or(MatchError::StateInvariant(
+                "dealing position must fit the authoritative deck",
+            ))?;
+        let cards: [CardId; PLAYER_COUNT] =
+            std::array::from_fn(|seat| self.state.current_attempt.deck[start + seat]);
+        for (seat, card) in cards.into_iter().enumerate() {
+            self.state.current_attempt.hands[seat].push(card);
+            self.state.current_attempt.cards_received[seat] = next;
+            self.state.current_attempt.pending_during_deal_reveal[seat] =
+                !self.state.current_attempt.reveal.revealed[seat];
+        }
+        self.push_system_event(SystemEventV2::DealingRoundDealt {
+            attempt_index: self.state.attempt_index,
+            cards_received: next,
+        })
+    }
+
+    fn open_calling(&mut self) -> Result<(), MatchError> {
+        if self.state.current_attempt.cards_received
+            != [u8::try_from(HUANLE_CARDS_PER_PLAYER).expect("Huanle card count fits in u8");
+                PLAYER_COUNT]
+        {
+            return Err(MatchError::StateInvariant(
+                "calling opens only after every seat has seventeen cards",
+            ));
+        }
+        if self
+            .state
+            .current_attempt
+            .pending_during_deal_reveal
+            .iter()
+            .any(|pending| *pending)
+        {
+            return Err(MatchError::StateInvariant(
+                "calling cannot open while a reveal decision remains pending",
+            ));
+        }
+        let first_caller = self
+            .state
+            .current_attempt
+            .reveal
+            .first_revealer
+            .unwrap_or(self.state.current_attempt.first_caller_candidate);
+        self.state.current_attempt.phase = PhaseV2::Calling;
+        self.state.current_attempt.first_caller = Some(first_caller);
+        self.push_system_event(SystemEventV2::CallingOpened {
+            attempt_index: self.state.attempt_index,
+            first_caller,
+        })
+    }
+
+    fn require_phase(&self, expected: PhaseV2) -> Result<(), MatchError> {
+        let actual = self.state.current_attempt.phase;
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(MatchError::UnexpectedPhase { expected, actual })
+        }
+    }
+
     fn next_decision_sequence(&self) -> Result<u64, MatchError> {
         u64::try_from(self.decision_events.len()).map_err(|_| MatchError::EventSequenceOverflow)
     }
@@ -722,37 +1292,80 @@ impl HuanleMatchV2 {
         u64::try_from(self.system_events.len()).map_err(|_| MatchError::EventSequenceOverflow)
     }
 
-    fn push_attempt_started_system_event(&mut self) -> Result<(), MatchError> {
+    fn push_system_event(&mut self, event: SystemEventV2) -> Result<(), MatchError> {
         let sequence = self.next_system_sequence()?;
-        let attempt = &self.state.current_attempt;
-        self.system_events.push(SystemEventRecordV2 {
-            sequence,
-            event: SystemEventV2::AttemptStarted {
-                attempt_index: attempt.attempt_index,
-                deal_seed: attempt.deal_seed,
-                first_caller_candidate: attempt.first_caller_candidate,
-            },
-        });
+        self.system_events
+            .push(SystemEventRecordV2 { sequence, event });
         Ok(())
+    }
+
+    fn push_attempt_started_system_event(&mut self) -> Result<(), MatchError> {
+        let attempt = &self.state.current_attempt;
+        self.push_system_event(SystemEventV2::AttemptStarted {
+            attempt_index: attempt.attempt_index,
+            deal_seed: attempt.deal_seed,
+            first_caller_candidate: attempt.first_caller_candidate,
+        })
     }
 }
 
 fn new_attempt(match_seed: u64, attempt_index: u32) -> DealAttemptStateV2 {
     let deal_seed = derive_attempt_seed(match_seed, attempt_index);
+    let deck = shuffled_deck_for_seed(deal_seed);
     DealAttemptStateV2 {
         attempt_index,
         deal_seed,
         shuffle_algorithm: SHUFFLE_ALGORITHM.to_owned(),
         first_caller_candidate: u8::try_from(deal_seed % (PLAYER_COUNT as u64))
             .expect("seat candidate is in 0..3"),
-        deck: shuffled_deck_for_seed(deal_seed).to_vec(),
+        deck: deck.to_vec(),
+        phase: PhaseV2::PreDealReveal,
+        pre_deal_reveal_order: pre_deal_reveal_order_for_seed(deal_seed),
+        pre_deal_reveal_order_algorithm: PRE_DEAL_REVEAL_ORDER_ALGORITHM.to_owned(),
+        pre_deal_reveal_cursor: 0,
+        cards_received: [0; PLAYER_COUNT],
+        reveal: RevealStateV2 {
+            revealed: [false; PLAYER_COUNT],
+            reveal_factor_by_seat: [0; PLAYER_COUNT],
+            first_revealer: None,
+            first_reveal_sequence: None,
+            maximum_factor: 1,
+        },
+        pending_during_deal_reveal: [false; PLAYER_COUNT],
+        first_caller: None,
+        hands: std::array::from_fn(|_| Vec::with_capacity(HUANLE_CARDS_PER_PLAYER)),
+        bottom_cards: [
+            deck[HUANLE_DEALT_CARD_COUNT],
+            deck[HUANLE_DEALT_CARD_COUNT + 1],
+            deck[HUANLE_DEALT_CARD_COUNT + 2],
+        ],
         accepted_action_count: 0,
         action_history: Vec::new(),
         status: AttemptStatusV2::Unresolved,
     }
 }
 
-fn validate_attempt(match_seed: u64, attempt: &DealAttemptStateV2) -> Result<(), MatchError> {
+fn pre_deal_reveal_order_for_seed(deal_seed: u64) -> [Seat; PLAYER_COUNT] {
+    // A complete six-permutation table preserves a randomized declaration
+    // order without deriving it from hidden physical card identities.
+    const ORDERS: [[Seat; PLAYER_COUNT]; 6] = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    let position = usize::try_from(deal_seed % (ORDERS.len() as u64))
+        .expect("pre-deal order index is below the permutation table length");
+    ORDERS[position]
+}
+
+fn validate_attempt(
+    match_seed: u64,
+    attempt: &DealAttemptStateV2,
+    rules: &RuleConfigV2,
+) -> Result<(), MatchError> {
     validate_seat(attempt.first_caller_candidate)?;
     if attempt.shuffle_algorithm != SHUFFLE_ALGORITHM {
         return Err(MatchError::StateInvariant(
@@ -773,19 +1386,84 @@ fn validate_attempt(match_seed: u64, attempt: &DealAttemptStateV2) -> Result<(),
             "first caller candidate must derive from deal seed",
         ));
     }
-    if attempt.deck != shuffled_deck_for_seed(attempt.deal_seed).to_vec() {
+    if attempt.deck.len() != CARD_COUNT {
+        return Err(MatchError::StateInvariant(
+            "attempt deck must contain all fifty-four physical cards",
+        ));
+    }
+    let expected_deck = shuffled_deck_for_seed(attempt.deal_seed);
+    if attempt.deck != expected_deck.to_vec() {
         return Err(MatchError::StateInvariant(
             "attempt deck must match the deterministic deal seed",
+        ));
+    }
+    let expected_bottom = [
+        expected_deck[HUANLE_DEALT_CARD_COUNT],
+        expected_deck[HUANLE_DEALT_CARD_COUNT + 1],
+        expected_deck[HUANLE_DEALT_CARD_COUNT + 2],
+    ];
+    if attempt.bottom_cards != expected_bottom {
+        return Err(MatchError::StateInvariant(
+            "attempt bottom cards must remain the undisclosed final deck partition",
+        ));
+    }
+    let received = attempt.cards_received;
+    if !received.iter().all(|count| *count == received[0])
+        || usize::from(received[0]) > HUANLE_CARDS_PER_PLAYER
+    {
+        return Err(MatchError::StateInvariant(
+            "R004 cards received must be an equal 0..17 count for every seat",
+        ));
+    }
+    for seat in 0..PLAYER_COUNT {
+        let expected_hand = (0..usize::from(received[seat]))
+            .map(|round| expected_deck[round * PLAYER_COUNT + seat])
+            .collect::<Vec<_>>();
+        if attempt.hands[seat] != expected_hand {
+            return Err(MatchError::StateInvariant(
+                "partial hands must be the deterministic round-robin deck partition",
+            ));
+        }
+    }
+    if attempt.pre_deal_reveal_order != pre_deal_reveal_order_for_seed(attempt.deal_seed) {
+        return Err(MatchError::StateInvariant(
+            "pre-deal reveal order must derive from the deterministic deal seed",
+        ));
+    }
+    if attempt.pre_deal_reveal_order_algorithm != PRE_DEAL_REVEAL_ORDER_ALGORITHM {
+        return Err(MatchError::StateInvariant(
+            "pre-deal reveal order algorithm must be pinned",
         ));
     }
     if let AttemptStatusV2::LandlordResolved { landlord } = attempt.status {
         validate_seat(landlord)?;
     }
     validate_action_history(&attempt.action_history, attempt.accepted_action_count)?;
+    let progress = replay_reveal_progress(
+        &attempt.action_history,
+        attempt.pre_deal_reveal_order,
+        attempt.first_caller_candidate,
+        rules,
+    )?;
+    if progress.phase != attempt.phase
+        || progress.pre_deal_reveal_cursor != attempt.pre_deal_reveal_cursor
+        || progress.cards_received != attempt.cards_received
+        || progress.reveal != attempt.reveal
+        || progress.pending_during_deal_reveal != attempt.pending_during_deal_reveal
+        || progress.first_caller != attempt.first_caller
+    {
+        return Err(MatchError::StateInvariant(
+            "attempt reveal/dealing state must replay exactly from accepted actions",
+        ));
+    }
     Ok(())
 }
 
-fn validate_summary(match_seed: u64, summary: &AttemptSummaryV2) -> Result<(), MatchError> {
+fn validate_summary(
+    match_seed: u64,
+    summary: &AttemptSummaryV2,
+    rules: &RuleConfigV2,
+) -> Result<(), MatchError> {
     validate_seat(summary.first_caller_candidate)?;
     if summary.shuffle_algorithm != SHUFFLE_ALGORITHM {
         return Err(MatchError::StateInvariant(
@@ -806,6 +1484,267 @@ fn validate_summary(match_seed: u64, summary: &AttemptSummaryV2) -> Result<(), M
         ));
     }
     validate_action_history(&summary.action_history, summary.accepted_action_count)?;
+    let progress = replay_reveal_progress(
+        &summary.action_history,
+        pre_deal_reveal_order_for_seed(summary.deal_seed),
+        summary.first_caller_candidate,
+        rules,
+    )?;
+    if progress.phase != summary.phase_at_completion
+        || progress.cards_received != summary.cards_received
+        || progress.reveal != summary.reveal
+        || progress.first_caller != summary.first_caller
+    {
+        return Err(MatchError::StateInvariant(
+            "completed attempt reveal/dealing summary must replay exactly",
+        ));
+    }
+    if summary.completion_reason == AttemptCompletionReasonV2::AllPass
+        && (summary.phase_at_completion != PhaseV2::Calling
+            || summary.reveal.first_revealer.is_some()
+            || summary.reveal.revealed.iter().any(|revealed| *revealed))
+    {
+        return Err(MatchError::StateInvariant(
+            "no-reveal all-pass summary must close only a fully dealt hidden attempt",
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RevealProgressV2 {
+    phase: PhaseV2,
+    pre_deal_reveal_cursor: u8,
+    cards_received: [u8; PLAYER_COUNT],
+    reveal: RevealStateV2,
+    pending_during_deal_reveal: [bool; PLAYER_COUNT],
+    first_caller: Option<Seat>,
+}
+
+fn replay_reveal_progress(
+    action_history: &[AttemptActionRecordV2],
+    pre_deal_reveal_order: [Seat; PLAYER_COUNT],
+    first_caller_candidate: Seat,
+    rules: &RuleConfigV2,
+) -> Result<RevealProgressV2, MatchError> {
+    let mut progress = RevealProgressV2 {
+        phase: PhaseV2::PreDealReveal,
+        pre_deal_reveal_cursor: 0,
+        cards_received: [0; PLAYER_COUNT],
+        reveal: RevealStateV2 {
+            revealed: [false; PLAYER_COUNT],
+            reveal_factor_by_seat: [0; PLAYER_COUNT],
+            first_revealer: None,
+            first_reveal_sequence: None,
+            maximum_factor: 1,
+        },
+        pending_during_deal_reveal: [false; PLAYER_COUNT],
+        first_caller: None,
+    };
+    for record in action_history {
+        match &record.action {
+            GameActionV2::PreDealReveal(decision) => {
+                replay_pre_deal_reveal_action(
+                    &mut progress,
+                    record,
+                    *decision,
+                    pre_deal_reveal_order,
+                    first_caller_candidate,
+                    rules,
+                )?;
+            }
+            GameActionV2::DuringDealReveal(decision) => {
+                replay_during_deal_reveal_action(
+                    &mut progress,
+                    record,
+                    *decision,
+                    first_caller_candidate,
+                    rules,
+                )?;
+            }
+            _ => {
+                if progress.phase != PhaseV2::Calling {
+                    return Err(MatchError::StateInvariant(
+                        "later-phase action occurred before R004 opened calling",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(progress)
+}
+
+fn replay_pre_deal_reveal_action(
+    progress: &mut RevealProgressV2,
+    record: &AttemptActionRecordV2,
+    decision: RevealDecisionV2,
+    pre_deal_reveal_order: [Seat; PLAYER_COUNT],
+    first_caller_candidate: Seat,
+    rules: &RuleConfigV2,
+) -> Result<(), MatchError> {
+    if progress.phase != PhaseV2::PreDealReveal {
+        return Err(MatchError::StateInvariant(
+            "pre-deal reveal action occurred outside the pre-deal phase",
+        ));
+    }
+    let expected = pre_deal_reveal_order
+        .get(usize::from(progress.pre_deal_reveal_cursor))
+        .copied()
+        .ok_or(MatchError::StateInvariant(
+            "pre-deal reveal action exceeded the declaration order",
+        ))?;
+    if record.actor != expected {
+        return Err(MatchError::StateInvariant(
+            "pre-deal reveal actions must follow the declaration order",
+        ));
+    }
+    if decision == RevealDecisionV2::Reveal {
+        accept_reveal_progress(
+            &mut progress.reveal,
+            record.actor,
+            rules.reveal.before_deal_factor,
+            record.sequence,
+        )?;
+    }
+    progress.pre_deal_reveal_cursor = progress
+        .pre_deal_reveal_cursor
+        .checked_add(1)
+        .ok_or(MatchError::EventSequenceOverflow)?;
+    if usize::from(progress.pre_deal_reveal_cursor) == PLAYER_COUNT {
+        progress.phase = PhaseV2::DealingReveal;
+        advance_reveal_progress_until_decision_or_calling(progress, first_caller_candidate)?;
+    }
+    Ok(())
+}
+
+fn replay_during_deal_reveal_action(
+    progress: &mut RevealProgressV2,
+    record: &AttemptActionRecordV2,
+    decision: RevealDecisionV2,
+    first_caller_candidate: Seat,
+    rules: &RuleConfigV2,
+) -> Result<(), MatchError> {
+    if progress.phase != PhaseV2::DealingReveal {
+        return Err(MatchError::StateInvariant(
+            "during-deal reveal action occurred outside a dealing round",
+        ));
+    }
+    let actor_index = usize::from(record.actor);
+    if !progress.pending_during_deal_reveal[actor_index] {
+        return Err(MatchError::StateInvariant(
+            "during-deal reveal action was not pending for its seat",
+        ));
+    }
+    if decision == RevealDecisionV2::Reveal {
+        let factor = *rules
+            .reveal
+            .factor_by_cards_received
+            .get(usize::from(progress.cards_received[actor_index]))
+            .ok_or(MatchError::StateInvariant(
+                "during-deal factor must use the explicit 0..17 schedule",
+            ))?;
+        accept_reveal_progress(&mut progress.reveal, record.actor, factor, record.sequence)?;
+    }
+    progress.pending_during_deal_reveal[actor_index] = false;
+    if !progress
+        .pending_during_deal_reveal
+        .iter()
+        .any(|pending| *pending)
+    {
+        if progress.cards_received[0]
+            == u8::try_from(HUANLE_CARDS_PER_PLAYER).expect("Huanle card count fits in u8")
+        {
+            open_calling_progress(progress, first_caller_candidate)?;
+        } else {
+            advance_reveal_progress_until_decision_or_calling(progress, first_caller_candidate)?;
+        }
+    }
+    Ok(())
+}
+
+fn accept_reveal_progress(
+    reveal: &mut RevealStateV2,
+    actor: Seat,
+    factor: u32,
+    action_sequence: u64,
+) -> Result<(), MatchError> {
+    let actor_index = usize::from(actor);
+    if reveal.revealed[actor_index] || factor <= 1 {
+        return Err(MatchError::StateInvariant(
+            "replay reveal state must be an irrevocable configured multiplier",
+        ));
+    }
+    reveal.revealed[actor_index] = true;
+    reveal.reveal_factor_by_seat[actor_index] = factor;
+    reveal.maximum_factor = reveal.maximum_factor.max(factor);
+    if reveal.first_revealer.is_none() {
+        reveal.first_revealer = Some(actor);
+        reveal.first_reveal_sequence = Some(action_sequence);
+    }
+    Ok(())
+}
+
+fn advance_reveal_progress_until_decision_or_calling(
+    progress: &mut RevealProgressV2,
+    first_caller_candidate: Seat,
+) -> Result<(), MatchError> {
+    loop {
+        if progress.phase != PhaseV2::DealingReveal {
+            return Err(MatchError::StateInvariant(
+                "only the dealing phase may advance its reveal progress",
+            ));
+        }
+        if progress.cards_received[0]
+            >= u8::try_from(HUANLE_CARDS_PER_PLAYER).expect("Huanle card count fits in u8")
+        {
+            return Err(MatchError::StateInvariant(
+                "reveal progress cannot deal more than seventeen rounds",
+            ));
+        }
+        let next = progress.cards_received[0]
+            .checked_add(1)
+            .ok_or(MatchError::StateInvariant(
+                "dealing progress card count overflowed",
+            ))?;
+        progress.cards_received = [next; PLAYER_COUNT];
+        progress.pending_during_deal_reveal =
+            std::array::from_fn(|seat| !progress.reveal.revealed[seat]);
+        if progress
+            .pending_during_deal_reveal
+            .iter()
+            .any(|pending| *pending)
+        {
+            return Ok(());
+        }
+        if next == u8::try_from(HUANLE_CARDS_PER_PLAYER).expect("Huanle card count fits in u8") {
+            return open_calling_progress(progress, first_caller_candidate);
+        }
+    }
+}
+
+fn open_calling_progress(
+    progress: &mut RevealProgressV2,
+    first_caller_candidate: Seat,
+) -> Result<(), MatchError> {
+    if progress.cards_received
+        != [u8::try_from(HUANLE_CARDS_PER_PLAYER).expect("Huanle card count fits in u8");
+            PLAYER_COUNT]
+        || progress
+            .pending_during_deal_reveal
+            .iter()
+            .any(|pending| *pending)
+    {
+        return Err(MatchError::StateInvariant(
+            "replay may open calling only after all reveal decisions finish",
+        ));
+    }
+    progress.phase = PhaseV2::Calling;
+    progress.first_caller = Some(
+        progress
+            .reveal
+            .first_revealer
+            .unwrap_or(first_caller_candidate),
+    );
     Ok(())
 }
 
@@ -864,6 +1803,12 @@ impl AttemptActionRecordV2 {
     }
 }
 
+impl GameActionV2 {
+    const fn is_r004_reveal_action(&self) -> bool {
+        matches!(self, Self::PreDealReveal(_) | Self::DuringDealReveal(_))
+    }
+}
+
 /// Errors produced by the v2 match lifecycle coordinator.
 #[derive(Debug)]
 pub enum MatchError {
@@ -876,6 +1821,32 @@ pub enum MatchError {
     },
     /// An action was attempted after terminal completion.
     TerminalMatch,
+    /// An operation was applied outside its authoritative phase.
+    UnexpectedPhase {
+        /// Phase required by the operation.
+        expected: PhaseV2,
+        /// Active phase that rejected the operation.
+        actual: PhaseV2,
+    },
+    /// A pre-deal declaration did not follow the seeded declaration order.
+    PreDealRevealOutOfTurn {
+        /// Seat that owns the next declaration.
+        expected: Seat,
+        /// Seat that attempted to declare instead.
+        actual: Seat,
+    },
+    /// A seat tried to decide during a dealing round without a pending offer.
+    DuringDealRevealNotPending {
+        /// Rejected seat.
+        seat: Seat,
+    },
+    /// A seat attempted to reveal after its prior reveal became irrevocable.
+    RevealAlreadyIrrevocable {
+        /// Rejected seat.
+        seat: Seat,
+    },
+    /// A caller bypassed the authoritative R004 reveal state machine.
+    RevealActionRequiresStateMachine,
     /// A no-reveal all-pass was reported without any accepted player-action evidence.
     AllPassWithoutAcceptedActions,
     /// A no-reveal all-pass was reported after an accepted reveal action.
@@ -919,6 +1890,25 @@ impl Display for MatchError {
                 write!(formatter, "seat {seat} is outside the Huanle table")
             }
             Self::TerminalMatch => write!(formatter, "match is terminal"),
+            Self::UnexpectedPhase { expected, actual } => write!(
+                formatter,
+                "operation requires {expected:?}, but the active phase is {actual:?}"
+            ),
+            Self::PreDealRevealOutOfTurn { expected, actual } => write!(
+                formatter,
+                "pre-deal reveal belongs to seat {expected}, not seat {actual}"
+            ),
+            Self::DuringDealRevealNotPending { seat } => write!(
+                formatter,
+                "seat {seat} has no pending during-deal reveal decision"
+            ),
+            Self::RevealAlreadyIrrevocable { seat } => {
+                write!(formatter, "seat {seat} has already irrevocably revealed")
+            }
+            Self::RevealActionRequiresStateMachine => write!(
+                formatter,
+                "pre-deal and during-deal reveal actions require the R004 state machine"
+            ),
             Self::AllPassWithoutAcceptedActions => {
                 write!(
                     formatter,
@@ -967,6 +1957,11 @@ impl Error for MatchError {
             Self::RuleConfig(error) => Some(error),
             Self::InvalidSeat { .. }
             | Self::TerminalMatch
+            | Self::UnexpectedPhase { .. }
+            | Self::PreDealRevealOutOfTurn { .. }
+            | Self::DuringDealRevealNotPending { .. }
+            | Self::RevealAlreadyIrrevocable { .. }
+            | Self::RevealActionRequiresStateMachine
             | Self::AllPassWithoutAcceptedActions
             | Self::AllPassAfterReveal
             | Self::LandlordResolutionWithoutAcceptedActions
