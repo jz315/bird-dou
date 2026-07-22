@@ -1,8 +1,8 @@
 use ddz_rules::{
     derive_attempt_seed, AttemptActionRecordV2, AttemptCompletionReasonV2, AttemptStatusV2,
     CallDecisionV2, GameActionV2, HuanleMatchV2, MatchDecisionEventV2, MatchError, PhaseV2,
-    RevealDecisionV2, RuleConfigV2, SystemEventV2, ATTEMPT_SEED_DERIVATION_ALGORITHM,
-    SHUFFLE_ALGORITHM,
+    RevealDecisionV2, RobDecisionV2, RuleConfigV2, SystemEventV2,
+    ATTEMPT_SEED_DERIVATION_ALGORITHM, SHUFFLE_ALGORITHM,
 };
 
 const HUANLE_V2_FIXTURE: &str =
@@ -55,6 +55,22 @@ fn drive_to_calling_without_reveal(game: &mut HuanleMatchV2) {
             }
         }
     }
+}
+
+fn resolve_robbing_with_passes(game: &mut HuanleMatchV2) {
+    while game.phase() == PhaseV2::Robbing {
+        let actor = *game
+            .state()
+            .current_attempt
+            .rob
+            .as_ref()
+            .unwrap()
+            .queue
+            .front()
+            .unwrap();
+        game.apply_rob(actor, RobDecisionV2::PassRob).unwrap();
+    }
+    assert_eq!(game.phase(), PhaseV2::BottomReveal);
 }
 
 #[test]
@@ -122,18 +138,18 @@ fn repeated_all_passes_preserve_every_attempt_and_can_reach_a_terminal_match_lif
     let caller = game.state().current_attempt.call.unwrap().current_player;
     game.apply_call(caller, CallDecisionV2::CallLandlord)
         .unwrap();
-    game.record_landlord_resolution(caller).unwrap();
+    resolve_robbing_with_passes(&mut game);
     game.complete_after_authoritative_card_play(2).unwrap();
 
     assert!(game.state().terminal);
-    assert_eq!(game.state().total_accepted_action_count, 169);
+    assert_eq!(game.state().total_accepted_action_count, 171);
     assert_eq!(
         game.state().current_attempt.status,
         AttemptStatusV2::LandlordResolved { landlord: caller }
     );
     assert_eq!(game.state().final_result.unwrap().winner, 2);
-    assert_eq!(game.decision_events().len(), 173);
-    assert_eq!(game.system_events().len(), 62);
+    assert_eq!(game.decision_events().len(), 175);
+    assert_eq!(game.system_events().len(), 64);
 }
 
 #[test]
@@ -150,13 +166,13 @@ fn deterministic_decision_replay_reconstructs_all_attempts_and_action_budgets_ex
     original
         .apply_call(caller, CallDecisionV2::CallLandlord)
         .unwrap();
-    original.record_landlord_resolution(caller).unwrap();
+    resolve_robbing_with_passes(&mut original);
     original.complete_after_authoritative_card_play(0).unwrap();
 
     let replay = HuanleMatchV2::replay(4242, &rules(), original.decision_events()).unwrap();
 
     assert_eq!(replay, original);
-    assert_eq!(replay.state().total_accepted_action_count, 112);
+    assert_eq!(replay.state().total_accepted_action_count, 114);
 }
 
 #[test]
@@ -200,7 +216,7 @@ fn invalid_lifecycle_transitions_are_transactional() {
     let caller = game.state().current_attempt.call.unwrap().current_player;
     game.apply_call(caller, CallDecisionV2::CallLandlord)
         .unwrap();
-    game.record_landlord_resolution(caller).unwrap();
+    resolve_robbing_with_passes(&mut game);
     let resolved = game.clone();
     assert!(matches!(
         game.resolve_no_reveal_all_pass(),

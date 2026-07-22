@@ -6,6 +6,7 @@
 //! bottom handling, doubling, card play, and settlement remain authoritative
 //! phase implementations in their respective tickets.
 
+use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -24,11 +25,11 @@ const HUANLE_DEALT_CARD_COUNT: usize = HUANLE_CARDS_PER_PLAYER * PLAYER_COUNT;
 /// Stable derivation used for the randomized pre-deal declaration order.
 pub const PRE_DEAL_REVEAL_ORDER_ALGORITHM: &str = "deal_seed_permutation_v1";
 
-/// Authoritative phase reached by the R003–R005 Huanle lifecycle.
+/// Authoritative phase reached by the R003–R006 Huanle lifecycle.
 ///
-/// R005 owns `Calling` and stops at the `Robbing`/`BottomReveal` boundaries.
-/// Rob queues, bottom-card ownership, doubling, card play, and settlement are
-/// introduced by their owning tickets instead of being guessed here.
+/// R006 owns `Robbing` through its deterministic candidate queue. Bottom-card
+/// ownership, doubling, card play, and settlement remain owned by their later
+/// phase tickets rather than being guessed here.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PhaseV2 {
@@ -84,6 +85,32 @@ pub struct CallStateV2 {
     pub declined: [bool; PLAYER_COUNT],
     /// First positive caller, if calling ended by `CallLandlord`.
     pub caller: Option<Seat>,
+}
+
+/// Explicit R006 rob-landlord state derived from the completed positive call.
+///
+/// `queue.front()` is the only seat entitled to choose `Rob` or `PassRob`.
+/// The original caller appears once at the tail with every other eligible
+/// seat. It is automatically skipped while still the unchanged candidate;
+/// after another seat robs, the room's explicit reclaim rule decides whether
+/// that retained tail position becomes a real action.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RobStateV2 {
+    /// First positive caller that created this rob state.
+    pub caller: Seat,
+    /// Current provisional landlord candidate.
+    pub candidate: Seat,
+    /// Seats eligible for an actual rob decision: `!CallStateV2::declined`.
+    pub eligible: [bool; PLAYER_COUNT],
+    /// Whether each seat has consumed its one real rob/pass decision.
+    pub acted: [bool; PLAYER_COUNT],
+    /// Remaining deterministic rob decision order.
+    pub queue: VecDeque<Seat>,
+    /// Number of successful candidate replacements.
+    pub successful_rob_count: u8,
+    /// Public factor produced by successful robs, starting at one.
+    pub rob_factor: u64,
 }
 
 /// Safe, reveal-phase observation for one player.
@@ -242,6 +269,9 @@ pub struct DealAttemptStateV2 {
     /// Explicit initial calling state while R005 owns the phase and retained at
     /// the R006/R007 boundary for deterministic replay and audit.
     pub call: Option<CallStateV2>,
+    /// Explicit rob queue and public rob factor while R006 owns the phase and
+    /// retained at the R007 boundary after a landlord resolves.
+    pub rob: Option<RobStateV2>,
     /// Server-authoritative partial/full physical hands. This is deliberately
     /// private so network code must use `reveal_observation` rather than
     /// accidentally returning hidden opponent cards.
@@ -287,6 +317,8 @@ pub struct AttemptSummaryV2 {
     pub first_caller: Option<Seat>,
     /// Complete call state at the all-pass disposition.
     pub call: Option<CallStateV2>,
+    /// All-pass occurs before Robbing, so this remains absent in a valid summary.
+    pub rob: Option<RobStateV2>,
     /// All accepted player actions attributed to this attempt.
     pub accepted_action_count: u64,
     /// Complete accepted player-action history for this closed attempt.
@@ -428,6 +460,35 @@ pub enum SystemEventV2 {
         attempt_index: u32,
         /// First revealer assigned as landlord by the frozen policy.
         landlord: Seat,
+    },
+    /// A positive call opened the explicit R006 rob queue.
+    RobbingOpened {
+        /// Attempt entering Robbing.
+        attempt_index: u32,
+        /// First caller and initial provisional candidate.
+        caller: Seat,
+    },
+    /// A seat successfully replaced the provisional landlord candidate.
+    RobSucceeded {
+        /// Attempt receiving the rob.
+        attempt_index: u32,
+        /// Seat that became candidate.
+        candidate: Seat,
+        /// Number of successful robs after this action.
+        successful_rob_count: u8,
+        /// Public factor after this action.
+        rob_factor: u64,
+    },
+    /// The rob queue exhausted and its candidate became landlord.
+    RobbingResolved {
+        /// Attempt whose rob queue finished.
+        attempt_index: u32,
+        /// Final landlord candidate.
+        landlord: Seat,
+        /// Total successful candidate replacements.
+        successful_rob_count: u8,
+        /// Final public rob factor.
+        rob_factor: u64,
     },
     /// A no-reveal all-pass transitioned within the same match to another attempt.
     Redeal {
@@ -656,6 +717,38 @@ impl HuanleMatchV2 {
         ])
     }
 
+    /// Enumerate the two rob actions for the queue front during R006.
+    ///
+    /// A caller that is still its own initial candidate is skipped by the
+    /// authoritative queue transition, so it never receives a self-rob action.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid seat, terminal match, or a corrupted
+    /// `Robbing` boundary state.
+    pub fn legal_rob_actions(&self, actor: Seat) -> Result<Vec<GameActionV2>, MatchError> {
+        self.ensure_not_terminal()?;
+        validate_seat(actor)?;
+        if self.phase() != PhaseV2::Robbing {
+            return Ok(Vec::new());
+        }
+        let rob = self
+            .state
+            .current_attempt
+            .rob
+            .as_ref()
+            .ok_or(MatchError::StateInvariant(
+                "robbing phase must retain an explicit rob state",
+            ))?;
+        if rob.queue.front().copied() != Some(actor) {
+            return Ok(Vec::new());
+        }
+        Ok(vec![
+            GameActionV2::Rob(RobDecisionV2::Rob),
+            GameActionV2::Rob(RobDecisionV2::PassRob),
+        ])
+    }
+
     /// Apply the next deterministic-order pre-deal reveal declaration.
     ///
     /// Once all three declarations are accepted, Rust automatically deals the
@@ -716,6 +809,26 @@ impl HuanleMatchV2 {
     pub fn apply_call(&mut self, actor: Seat, decision: CallDecisionV2) -> Result<(), MatchError> {
         let mut next = self.clone();
         next.apply_call_inner(actor, decision)?;
+        next.validate()?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Apply one authoritative R006 rob-landlord decision.
+    ///
+    /// `Rob` replaces the candidate and multiplies the explicit public rob
+    /// factor. `PassRob` only consumes this seat's one queue opportunity. Once
+    /// the queue has no real decision left, its candidate resolves as landlord
+    /// and the phase stops at `BottomReveal` for R007.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an incorrect phase or queue actor, a duplicate
+    /// decision, invalid seat, terminal match, or rob factor/count overflow.
+    /// Errors are transactional.
+    pub fn apply_rob(&mut self, actor: Seat, decision: RobDecisionV2) -> Result<(), MatchError> {
+        let mut next = self.clone();
+        next.apply_rob_inner(actor, decision)?;
         next.validate()?;
         *self = next;
         Ok(())
@@ -805,6 +918,7 @@ impl HuanleMatchV2 {
             reveal: self.state.current_attempt.reveal,
             first_caller: self.state.current_attempt.first_caller,
             call: self.state.current_attempt.call,
+            rob: self.state.current_attempt.rob.clone(),
             accepted_action_count: self.state.current_attempt.accepted_action_count,
             action_history: self.state.current_attempt.action_history.clone(),
             completion_reason: AttemptCompletionReasonV2::AllPass,
@@ -841,13 +955,21 @@ impl HuanleMatchV2 {
         Ok(())
     }
 
-    /// Record a landlord resolution produced by a future validated call/rob state machine.
+    /// Record a landlord resolution produced by a validated phase state machine.
+    ///
+    /// R006 makes a `Robbing` resolution an internal consequence of an exhausted
+    /// queue. This compatibility method therefore refuses to bypass that queue;
+    /// its remaining `Calling` validation only preserves the R005 all-pass
+    /// boundary for deserialized legacy lifecycle callers.
     ///
     /// # Errors
     ///
     /// Returns an error for an invalid seat, absent accepted action evidence, an already resolved
     /// attempt, or a terminal match.
     pub fn record_landlord_resolution(&mut self, landlord: Seat) -> Result<(), MatchError> {
+        if self.phase() == PhaseV2::Robbing {
+            return Err(MatchError::ActionRequiresOwningStateMachine { phase: "robbing" });
+        }
         let mut next = self.clone();
         next.record_landlord_resolution_inner(landlord)?;
         next.validate()?;
@@ -877,7 +999,15 @@ impl HuanleMatchV2 {
                 }
             }
             PhaseV2::Robbing => {
-                if call.caller.is_none() {
+                let rob =
+                    self.state
+                        .current_attempt
+                        .rob
+                        .as_ref()
+                        .ok_or(MatchError::StateInvariant(
+                            "robbing landlord resolution must retain an explicit rob state",
+                        ))?;
+                if call.caller.is_none() || !rob.queue.is_empty() || rob.candidate != landlord {
                     return Err(MatchError::LandlordResolutionRequiresCallOutcome);
                 }
             }
@@ -989,6 +1119,7 @@ impl HuanleMatchV2 {
                             replay.apply_during_deal_reveal(actor, decision)?;
                         }
                         GameActionV2::Call(decision) => replay.apply_call(actor, decision)?,
+                        GameActionV2::Rob(decision) => replay.apply_rob(actor, decision)?,
                         action => replay.record_accepted_action(actor, &action)?,
                     }
                 }
@@ -1288,11 +1419,18 @@ impl HuanleMatchV2 {
                         ))?;
                 call.acted[usize::from(actor)] = true;
                 call.caller = Some(actor);
+                let rob = new_rob_state(*call)?;
                 self.state.current_attempt.phase = PhaseV2::Robbing;
+                self.state.current_attempt.rob = Some(rob);
                 self.push_system_event(SystemEventV2::CallingEndedWithCall {
                     attempt_index: self.state.attempt_index,
                     caller: actor,
                 })?;
+                self.push_system_event(SystemEventV2::RobbingOpened {
+                    attempt_index: self.state.attempt_index,
+                    caller: actor,
+                })?;
+                self.advance_rob_until_decision_or_resolution()?;
             }
             CallDecisionV2::PassCall => {
                 let all_acted = {
@@ -1342,6 +1480,140 @@ impl HuanleMatchV2 {
             }
         }
         Ok(())
+    }
+
+    fn apply_rob_inner(&mut self, actor: Seat, decision: RobDecisionV2) -> Result<(), MatchError> {
+        self.ensure_not_terminal()?;
+        validate_seat(actor)?;
+        self.require_phase(PhaseV2::Robbing)?;
+        let rob = self
+            .state
+            .current_attempt
+            .rob
+            .as_ref()
+            .ok_or(MatchError::StateInvariant(
+                "robbing phase must retain an explicit rob state",
+            ))?;
+        let expected = rob
+            .queue
+            .front()
+            .copied()
+            .ok_or(MatchError::StateInvariant(
+                "robbing phase must resolve before exposing an empty queue",
+            ))?;
+        if actor != expected {
+            return Err(MatchError::RobOutOfTurn {
+                expected,
+                actual: actor,
+            });
+        }
+        let actor_index = usize::from(actor);
+        if !rob.eligible[actor_index] {
+            return Err(MatchError::RobIneligible { seat: actor });
+        }
+        if rob.acted[actor_index] {
+            return Err(MatchError::RobAlreadyActed { seat: actor });
+        }
+
+        let rob_factor_per_success = u64::from(self.rules.robbing.factor_per_successful_rob);
+        self.append_accepted_action(actor, GameActionV2::Rob(decision))?;
+        let successful_rob = {
+            let rob = self
+                .state
+                .current_attempt
+                .rob
+                .as_mut()
+                .ok_or(MatchError::StateInvariant(
+                    "robbing phase must retain an explicit rob state",
+                ))?;
+            if rob.queue.pop_front() != Some(actor) {
+                return Err(MatchError::StateInvariant(
+                    "rob queue front must remain stable through one action",
+                ));
+            }
+            rob.acted[actor_index] = true;
+            if decision == RobDecisionV2::Rob {
+                rob.candidate = actor;
+                rob.successful_rob_count = rob
+                    .successful_rob_count
+                    .checked_add(1)
+                    .ok_or(MatchError::RobCountOverflow)?;
+                rob.rob_factor = rob
+                    .rob_factor
+                    .checked_mul(rob_factor_per_success)
+                    .ok_or(MatchError::RobFactorOverflow)?;
+                Some((rob.successful_rob_count, rob.rob_factor))
+            } else {
+                None
+            }
+        };
+        if let Some((successful_rob_count, rob_factor)) = successful_rob {
+            self.push_system_event(SystemEventV2::RobSucceeded {
+                attempt_index: self.state.attempt_index,
+                candidate: actor,
+                successful_rob_count,
+                rob_factor,
+            })?;
+        }
+        self.advance_rob_until_decision_or_resolution()
+    }
+
+    fn advance_rob_until_decision_or_resolution(&mut self) -> Result<(), MatchError> {
+        loop {
+            let skip_queue_front =
+                {
+                    let rob = self.state.current_attempt.rob.as_ref().ok_or(
+                        MatchError::StateInvariant(
+                            "robbing phase must retain an explicit rob state",
+                        ),
+                    )?;
+                    rob.queue.front().is_some_and(|seat| {
+                        let seat_index = usize::from(*seat);
+                        (!rob.acted[seat_index] && *seat == rob.candidate)
+                            || (!self.rules.robbing.caller_can_reclaim
+                                && !rob.acted[seat_index]
+                                && *seat == rob.caller)
+                    })
+                };
+            if skip_queue_front {
+                self.state
+                    .current_attempt
+                    .rob
+                    .as_mut()
+                    .ok_or(MatchError::StateInvariant(
+                        "robbing phase must retain an explicit rob state",
+                    ))?
+                    .queue
+                    .pop_front();
+                continue;
+            }
+
+            let completion =
+                {
+                    let rob = self.state.current_attempt.rob.as_ref().ok_or(
+                        MatchError::StateInvariant(
+                            "robbing phase must retain an explicit rob state",
+                        ),
+                    )?;
+                    if rob.queue.is_empty() {
+                        Some((rob.candidate, rob.successful_rob_count, rob.rob_factor))
+                    } else {
+                        None
+                    }
+                };
+            let Some((landlord, successful_rob_count, rob_factor)) = completion else {
+                return Ok(());
+            };
+            self.record_landlord_resolution_inner(landlord)?;
+            self.state.current_attempt.phase = PhaseV2::BottomReveal;
+            self.push_system_event(SystemEventV2::RobbingResolved {
+                attempt_index: self.state.attempt_index,
+                landlord,
+                successful_rob_count,
+                rob_factor,
+            })?;
+            return Ok(());
+        }
     }
 
     fn record_accepted_action_inner(
@@ -1588,6 +1860,7 @@ fn new_attempt(match_seed: u64, attempt_index: u32) -> DealAttemptStateV2 {
         pending_during_deal_reveal: [false; PLAYER_COUNT],
         first_caller: None,
         call: None,
+        rob: None,
         hands: std::array::from_fn(|_| Vec::with_capacity(HUANLE_CARDS_PER_PLAYER)),
         bottom_cards: [
             deck[HUANLE_DEALT_CARD_COUNT],
@@ -1624,6 +1897,41 @@ const fn new_call_state(first_caller: Seat) -> CallStateV2 {
         declined: [false; PLAYER_COUNT],
         caller: None,
     }
+}
+
+fn new_rob_state(call: CallStateV2) -> Result<RobStateV2, MatchError> {
+    let caller = call.caller.ok_or(MatchError::StateInvariant(
+        "rob state requires one positive initial caller",
+    ))?;
+    validate_seat(caller)?;
+    let caller_index = usize::from(caller);
+    if !call.acted[caller_index] || call.declined[caller_index] {
+        return Err(MatchError::StateInvariant(
+            "positive caller must have acted without declining",
+        ));
+    }
+
+    let eligible = call.declined.map(|declined| !declined);
+    let mut queue = VecDeque::with_capacity(PLAYER_COUNT);
+    for offset in 1..=PLAYER_COUNT {
+        let seat_index = (usize::from(caller) + offset) % PLAYER_COUNT;
+        if !eligible[seat_index] {
+            continue;
+        }
+        let seat = u8::try_from(seat_index)
+            .map_err(|_| MatchError::StateInvariant("Huanle seat index must fit in u8"))?;
+        queue.push_back(seat);
+    }
+
+    Ok(RobStateV2 {
+        caller,
+        candidate: caller,
+        eligible,
+        acted: [false; PLAYER_COUNT],
+        queue,
+        successful_rob_count: 0,
+        rob_factor: 1,
+    })
 }
 
 fn next_unacted_call_seat(actor: Seat, acted: [bool; PLAYER_COUNT]) -> Result<Seat, MatchError> {
@@ -1730,10 +2038,32 @@ fn validate_attempt(
         || progress.pending_during_deal_reveal != attempt.pending_during_deal_reveal
         || progress.first_caller != attempt.first_caller
         || progress.call != attempt.call
+        || progress.rob != attempt.rob
     {
         return Err(MatchError::StateInvariant(
-            "attempt reveal/dealing state must replay exactly from accepted actions",
+            "attempt reveal/call/rob state must replay exactly from accepted actions",
         ));
+    }
+    validate_attempt_rob_boundary(attempt)?;
+    Ok(())
+}
+
+fn validate_attempt_rob_boundary(attempt: &DealAttemptStateV2) -> Result<(), MatchError> {
+    match (attempt.phase, attempt.status, attempt.rob.as_ref()) {
+        (PhaseV2::Robbing, AttemptStatusV2::Unresolved, Some(rob)) if !rob.queue.is_empty() => {}
+        (PhaseV2::Robbing, _, _) => {
+            return Err(MatchError::StateInvariant(
+                "active robbing phase must retain an unresolved non-empty rob queue",
+            ));
+        }
+        (PhaseV2::BottomReveal, AttemptStatusV2::LandlordResolved { landlord }, Some(rob))
+            if rob.queue.is_empty() && rob.candidate == landlord => {}
+        (_, AttemptStatusV2::LandlordResolved { .. }, Some(_)) => {
+            return Err(MatchError::StateInvariant(
+                "rob-backed landlord resolution must retain its empty final queue",
+            ));
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1774,15 +2104,17 @@ fn validate_summary(
         || progress.reveal != summary.reveal
         || progress.first_caller != summary.first_caller
         || progress.call != summary.call
+        || progress.rob != summary.rob
     {
         return Err(MatchError::StateInvariant(
-            "completed attempt reveal/dealing summary must replay exactly",
+            "completed attempt reveal/call/rob summary must replay exactly",
         ));
     }
     if summary.completion_reason == AttemptCompletionReasonV2::AllPass
         && (summary.phase_at_completion != PhaseV2::Calling
             || summary.reveal.first_revealer.is_some()
             || summary.reveal.revealed.iter().any(|revealed| *revealed)
+            || summary.rob.is_some()
             || !summary.call.is_some_and(|call| {
                 call.caller.is_none()
                     && call.acted.iter().all(|acted| *acted)
@@ -1796,7 +2128,7 @@ fn validate_summary(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct RevealProgressV2 {
     phase: PhaseV2,
     pre_deal_reveal_cursor: u8,
@@ -1805,6 +2137,7 @@ struct RevealProgressV2 {
     pending_during_deal_reveal: [bool; PLAYER_COUNT],
     first_caller: Option<Seat>,
     call: Option<CallStateV2>,
+    rob: Option<RobStateV2>,
 }
 
 fn replay_reveal_progress(
@@ -1827,6 +2160,7 @@ fn replay_reveal_progress(
         pending_during_deal_reveal: [false; PLAYER_COUNT],
         first_caller: None,
         call: None,
+        rob: None,
     };
     for record in action_history {
         match &record.action {
@@ -1850,7 +2184,10 @@ fn replay_reveal_progress(
                 )?;
             }
             GameActionV2::Call(decision) => {
-                replay_call_action(&mut progress, record, *decision)?;
+                replay_call_action(&mut progress, record, *decision, rules)?;
+            }
+            GameActionV2::Rob(decision) => {
+                replay_rob_action(&mut progress, record, *decision, rules)?;
             }
             _ => {
                 if !matches!(
@@ -1959,6 +2296,7 @@ fn replay_call_action(
     progress: &mut RevealProgressV2,
     record: &AttemptActionRecordV2,
     decision: CallDecisionV2,
+    rules: &RuleConfigV2,
 ) -> Result<(), MatchError> {
     if progress.phase != PhaseV2::Calling {
         return Err(MatchError::StateInvariant(
@@ -1978,7 +2316,13 @@ fn replay_call_action(
     match decision {
         CallDecisionV2::CallLandlord => {
             call.caller = Some(record.actor);
+            let call = *call;
             progress.phase = PhaseV2::Robbing;
+            progress.rob = Some(new_rob_state(call)?);
+            advance_rob_progress_until_decision_or_resolution(
+                progress,
+                rules.robbing.caller_can_reclaim,
+            )?;
         }
         CallDecisionV2::PassCall => {
             call.declined[actor_index] = true;
@@ -1992,6 +2336,94 @@ fn replay_call_action(
         }
     }
     Ok(())
+}
+
+fn replay_rob_action(
+    progress: &mut RevealProgressV2,
+    record: &AttemptActionRecordV2,
+    decision: RobDecisionV2,
+    rules: &RuleConfigV2,
+) -> Result<(), MatchError> {
+    if progress.phase != PhaseV2::Robbing {
+        return Err(MatchError::StateInvariant(
+            "rob action occurred outside the robbing phase",
+        ));
+    }
+    let actor_index = usize::from(record.actor);
+    let rob = progress.rob.as_mut().ok_or(MatchError::StateInvariant(
+        "robbing phase must retain an explicit rob state",
+    ))?;
+    if rob.queue.front().copied() != Some(record.actor) {
+        return Err(MatchError::StateInvariant(
+            "rob action must come from the deterministic queue front",
+        ));
+    }
+    if !rob.eligible[actor_index] || rob.acted[actor_index] {
+        return Err(MatchError::StateInvariant(
+            "rob action must consume one eligible unused opportunity",
+        ));
+    }
+    if rob.queue.pop_front() != Some(record.actor) {
+        return Err(MatchError::StateInvariant(
+            "rob queue front must remain stable through replay",
+        ));
+    }
+    rob.acted[actor_index] = true;
+    if decision == RobDecisionV2::Rob {
+        rob.candidate = record.actor;
+        rob.successful_rob_count =
+            rob.successful_rob_count
+                .checked_add(1)
+                .ok_or(MatchError::StateInvariant(
+                    "replay successful rob count overflowed",
+                ))?;
+        rob.rob_factor = rob
+            .rob_factor
+            .checked_mul(u64::from(rules.robbing.factor_per_successful_rob))
+            .ok_or(MatchError::StateInvariant("replay rob factor overflowed"))?;
+    }
+    advance_rob_progress_until_decision_or_resolution(progress, rules.robbing.caller_can_reclaim)
+}
+
+fn advance_rob_progress_until_decision_or_resolution(
+    progress: &mut RevealProgressV2,
+    caller_can_reclaim: bool,
+) -> Result<(), MatchError> {
+    loop {
+        let skip_queue_front = {
+            let rob = progress.rob.as_ref().ok_or(MatchError::StateInvariant(
+                "robbing phase must retain an explicit rob state",
+            ))?;
+            rob.queue.front().is_some_and(|seat| {
+                let seat_index = usize::from(*seat);
+                (!rob.acted[seat_index] && *seat == rob.candidate)
+                    || (!caller_can_reclaim && !rob.acted[seat_index] && *seat == rob.caller)
+            })
+        };
+        if skip_queue_front {
+            progress
+                .rob
+                .as_mut()
+                .ok_or(MatchError::StateInvariant(
+                    "robbing phase must retain an explicit rob state",
+                ))?
+                .queue
+                .pop_front();
+            continue;
+        }
+        let queue_is_empty = progress
+            .rob
+            .as_ref()
+            .ok_or(MatchError::StateInvariant(
+                "robbing phase must retain an explicit rob state",
+            ))?
+            .queue
+            .is_empty();
+        if queue_is_empty {
+            progress.phase = PhaseV2::BottomReveal;
+        }
+        return Ok(());
+    }
 }
 
 fn accept_reveal_progress(
@@ -2078,6 +2510,7 @@ fn open_calling_progress(
             .unwrap_or(first_caller_candidate),
     );
     progress.call = progress.first_caller.map(new_call_state);
+    progress.rob = None;
     Ok(())
 }
 
@@ -2193,6 +2626,27 @@ pub enum MatchError {
         /// Rejected seat.
         seat: Seat,
     },
+    /// A rob decision came from a seat other than the queue front.
+    RobOutOfTurn {
+        /// Seat entitled to make the next rob decision.
+        expected: Seat,
+        /// Seat that attempted the decision instead.
+        actual: Seat,
+    },
+    /// A player who passed the initial call attempted to rob.
+    RobIneligible {
+        /// Rejected seat.
+        seat: Seat,
+    },
+    /// A seat attempted a second real rob/pass decision.
+    RobAlreadyActed {
+        /// Rejected seat.
+        seat: Seat,
+    },
+    /// Successful rob count cannot represent another candidate replacement.
+    RobCountOverflow,
+    /// The explicit public rob factor cannot represent another multiplication.
+    RobFactorOverflow,
     /// A no-reveal all-pass was reported without any accepted player-action evidence.
     AllPassWithoutAcceptedActions,
     /// A no-reveal all-pass was reported after an accepted reveal action.
@@ -2232,8 +2686,50 @@ pub enum MatchError {
     StateInvariant(&'static str),
 }
 
+fn is_rob_error(error: &MatchError) -> bool {
+    matches!(
+        error,
+        MatchError::RobOutOfTurn { .. }
+            | MatchError::RobIneligible { .. }
+            | MatchError::RobAlreadyActed { .. }
+            | MatchError::RobCountOverflow
+            | MatchError::RobFactorOverflow
+    )
+}
+
+fn display_rob_error(error: &MatchError, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+    match error {
+        MatchError::RobOutOfTurn { expected, actual } => write!(
+            formatter,
+            "rob decision belongs to seat {expected}, not seat {actual}"
+        ),
+        MatchError::RobIneligible { seat } => {
+            write!(
+                formatter,
+                "seat {seat} is ineligible to rob after passing the call"
+            )
+        }
+        MatchError::RobAlreadyActed { seat } => {
+            write!(formatter, "seat {seat} has already made its rob decision")
+        }
+        MatchError::RobCountOverflow => write!(formatter, "successful rob count overflow"),
+        MatchError::RobFactorOverflow => write!(formatter, "rob factor overflow"),
+        _ => unreachable!("only rob errors may use the rob error formatter"),
+    }
+}
+
+fn display_call_action_error(formatter: &mut Formatter<'_>) -> std::fmt::Result {
+    write!(
+        formatter,
+        "initial call actions require the R005 state machine"
+    )
+}
+
 impl Display for MatchError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        if is_rob_error(self) {
+            return display_rob_error(self, formatter);
+        }
         match self {
             Self::RuleConfig(error) => Display::fmt(error, formatter),
             Self::InvalidSeat { seat } => {
@@ -2259,12 +2755,7 @@ impl Display for MatchError {
                 formatter,
                 "pre-deal and during-deal reveal actions require the R004 state machine"
             ),
-            Self::CallActionRequiresStateMachine => {
-                write!(
-                    formatter,
-                    "initial call actions require the R005 state machine"
-                )
-            }
+            Self::CallActionRequiresStateMachine => display_call_action_error(formatter),
             Self::ActionRequiresOwningStateMachine { phase } => {
                 write!(
                     formatter,
@@ -2281,6 +2772,11 @@ impl Display for MatchError {
                     "seat {seat} has already made its initial call decision"
                 )
             }
+            Self::RobOutOfTurn { .. }
+            | Self::RobIneligible { .. }
+            | Self::RobAlreadyActed { .. }
+            | Self::RobCountOverflow
+            | Self::RobFactorOverflow => unreachable!("rob errors returned above"),
             Self::AllPassWithoutAcceptedActions => {
                 write!(
                     formatter,
@@ -2346,6 +2842,11 @@ impl Error for MatchError {
             | Self::ActionRequiresOwningStateMachine { .. }
             | Self::CallOutOfTurn { .. }
             | Self::CallAlreadyActed { .. }
+            | Self::RobOutOfTurn { .. }
+            | Self::RobIneligible { .. }
+            | Self::RobAlreadyActed { .. }
+            | Self::RobCountOverflow
+            | Self::RobFactorOverflow
             | Self::AllPassWithoutAcceptedActions
             | Self::AllPassAfterReveal
             | Self::NoRevealAllPassRequiresCompleteCallPass

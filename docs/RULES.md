@@ -282,23 +282,32 @@ opponent hand field. It is not the full v2 observation schema, unknown-pool,
 serialization, or undo implementation reserved for R009.
 
 R005 adds `CallStateV2` at the Calling boundary. Its only legal actions are
-`CallLandlord` and `PassCall`, and only `current_player` may use one. The first
-positive call sets `caller` and opens `Robbing` without assigning a final
-landlord or manufacturing a rob action. A pass marks both `acted` and
-`declined`, allowing R006 to derive eligibility as `!declined`. After all three
-passes, a first revealer is deterministically recorded as landlord and the
-phase stops at `BottomReveal`; without a revealer, the fully auditable call
-state produces the existing same-match `AllPass` redeal. Direct generic action
-recording rejects every phase action so no later phase can be simulated before
-its ticket owns it.
+`CallLandlord` and `PassCall`, and only `current_player` may use one. A pass
+marks both `acted` and `declined`; after all three passes, a first revealer is
+deterministically recorded as landlord and the phase stops at `BottomReveal`,
+while no revealer produces the same-match auditable `AllPass` redeal.
+
+R006 turns a positive call into an authoritative `RobStateV2`. `eligible` is
+exactly `!declined`, and the ordered queue scans once from the caller's next
+seat. Only its front has `Rob`/`PassRob` legal actions. The initial candidate
+automatically skips its own queue position; if another seat takes the
+candidate, the original caller's retained tail position becomes a real reclaim
+decision only when `robbing.caller_can_reclaim` is true. A seat receives at
+most one real rob decision. Each accepted `Rob` changes `candidate`, increments
+`successful_rob_count`, and multiplies `rob_factor` by the configured frozen
+factor (two for `huanle_classic_v1`); `PassRob` changes neither. An exhausted
+queue automatically resolves its candidate as landlord and moves to
+`BottomReveal`. Generic action recording and the public landlord-recording seam
+cannot bypass this queue.
 
 The coordinator has a replayable decision log and a separately ordered system
-log. R004/R005 validate reveal and call actions directly. One accepted call
-action may deterministically append its immediate all-pass lifecycle event;
-replay compares that entire generated event suffix rather than accepting an
-unvalidated shortcut. Rob, bottom, double, play, and settlement remain later
-phase state machines. This preserves every attempt's action budget while
-keeping phase legality in its owning ticket.
+log. R004/R005/R006 validate reveal, call, and rob actions directly. One
+accepted call or final rob action may deterministically append lifecycle events
+such as `AllPass` or `LandlordResolved`; replay compares that whole generated
+event suffix rather than accepting an unvalidated shortcut. Bottom handling,
+post-bottom reveal, doubling, play, and settlement remain later phase state
+machines. This preserves every attempt's action budget while keeping phase
+legality in its owning ticket.
 
 ## `douzero_post_bid`
 
