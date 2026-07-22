@@ -1,203 +1,424 @@
-//! Physical-card and rank-count representations.
-
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::ops::{Index, IndexMut};
 
-/// Number of physical cards in the standard `DouDizhu` deck.
+use serde::{Deserialize, Serialize};
+
+pub const PLAYER_COUNT: usize = 3;
 pub const CARD_COUNT: usize = 54;
-/// Number of ordered ranks: `3..A, 2, small joker, big joker`.
 pub const RANK_COUNT: usize = 15;
-/// Rank ID assigned to the small joker.
-pub const SMALL_JOKER_RANK: RankId = 13;
-/// Rank ID assigned to the big joker.
-pub const BIG_JOKER_RANK: RankId = 14;
-/// Physical card ID assigned to the small joker.
-pub const SMALL_JOKER_CARD: CardId = 52;
-/// Physical card ID assigned to the big joker.
-pub const BIG_JOKER_CARD: CardId = 53;
+pub const SMALL_JOKER: Rank = Rank::SmallJoker;
+pub const BIG_JOKER: Rank = Rank::BigJoker;
 
-/// Physical card identifier in the inclusive range `0..=53`.
-pub type CardId = u8;
-/// Ordered rank identifier in the inclusive range `0..=14`.
-pub type RankId = u8;
-/// Player seat identifier. Valid seats are defined with game state in E007.
-pub type Seat = u8;
-/// Per-rank card multiplicities ordered as `3..A, 2, small joker, big joker`.
-pub type RankCounts = [u8; RANK_COUNT];
-/// Rank counts for an empty hand.
-pub const EMPTY_RANK_COUNTS: RankCounts = [0; RANK_COUNT];
-
-/// Errors produced while validating or converting card representations.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CardError {
-    /// A physical card ID fell outside `0..=53`.
-    InvalidCardId {
-        /// Rejected card ID.
-        card_id: CardId,
-    },
-    /// A rank ID fell outside `0..=14`.
-    InvalidRankId {
-        /// Rejected rank ID.
-        rank_id: RankId,
-    },
-    /// The same physical card appeared more than once in a card list.
-    DuplicateCardId {
-        /// Repeated card ID.
-        card_id: CardId,
-    },
-    /// A rank count exceeded the number of physical cards available for that rank.
-    TooManyCardsForRank {
-        /// Rank containing the invalid count.
-        rank_id: RankId,
-        /// Rejected count.
-        count: u8,
-        /// Maximum physical count for the rank.
-        maximum: u8,
-    },
+/// Ordered ranks `3..A, 2, small joker, big joker`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[repr(u8)]
+#[serde(rename_all = "snake_case")]
+pub enum Rank {
+    Three = 0,
+    Four = 1,
+    Five = 2,
+    Six = 3,
+    Seven = 4,
+    Eight = 5,
+    Nine = 6,
+    Ten = 7,
+    Jack = 8,
+    Queen = 9,
+    King = 10,
+    Ace = 11,
+    Two = 12,
+    SmallJoker = 13,
+    BigJoker = 14,
 }
 
-impl Display for CardError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+impl Rank {
+    pub const ALL: [Self; RANK_COUNT] = [
+        Self::Three,
+        Self::Four,
+        Self::Five,
+        Self::Six,
+        Self::Seven,
+        Self::Eight,
+        Self::Nine,
+        Self::Ten,
+        Self::Jack,
+        Self::Queen,
+        Self::King,
+        Self::Ace,
+        Self::Two,
+        Self::SmallJoker,
+        Self::BigJoker,
+    ];
+
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    pub const fn value(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn capacity(self) -> u8 {
         match self {
-            Self::InvalidCardId { card_id } => {
-                write!(formatter, "card ID {card_id} is outside 0..=53")
-            }
-            Self::InvalidRankId { rank_id } => {
-                write!(formatter, "rank ID {rank_id} is outside 0..=14")
-            }
-            Self::DuplicateCardId { card_id } => {
-                write!(
-                    formatter,
-                    "physical card ID {card_id} appears more than once"
-                )
-            }
-            Self::TooManyCardsForRank {
-                rank_id,
-                count,
-                maximum,
-            } => write!(
-                formatter,
-                "rank ID {rank_id} has count {count}, but its maximum is {maximum}"
-            ),
+            Self::SmallJoker | Self::BigJoker => 1,
+            _ => 4,
+        }
+    }
+
+    pub const fn is_straight_eligible(self) -> bool {
+        self.value() <= Rank::Ace.value()
+    }
+}
+
+impl TryFrom<u8> for Rank {
+    type Error = RankCountsError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Rank::ALL
+            .get(usize::from(value))
+            .copied()
+            .ok_or(RankCountsError::InvalidRank { value })
+    }
+}
+
+/// Valid physical card ID in the inclusive range `0..=53`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[repr(transparent)]
+#[serde(try_from = "u8", into = "u8")]
+pub struct CardId(u8);
+
+impl CardId {
+    pub const fn new(value: u8) -> Result<Self, CardIdError> {
+        if value < CARD_COUNT as u8 {
+            Ok(Self(value))
+        } else {
+            Err(CardIdError { value })
+        }
+    }
+
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+
+    pub const fn rank(self) -> Rank {
+        match self.0 {
+            0..=51 => Rank::ALL[(self.0 / 4) as usize],
+            52 => Rank::SmallJoker,
+            53 => Rank::BigJoker,
+            _ => unreachable!(),
         }
     }
 }
 
-impl Error for CardError {}
+impl TryFrom<u8> for CardId {
+    type Error = CardIdError;
 
-/// Convert a physical card ID to its ordered rank ID.
-///
-/// IDs `0..=51` are rank-major with four physical cards per rank. IDs 52 and
-/// 53 are the small and big jokers respectively.
-///
-/// # Errors
-///
-/// Returns [`CardError::InvalidCardId`] when `card_id` is greater than 53.
-pub const fn card_id_to_rank(card_id: CardId) -> Result<RankId, CardError> {
-    match card_id {
-        0..=51 => Ok(card_id / 4),
-        SMALL_JOKER_CARD => Ok(SMALL_JOKER_RANK),
-        BIG_JOKER_CARD => Ok(BIG_JOKER_RANK),
-        _ => Err(CardError::InvalidCardId { card_id }),
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
-/// Return the physical-card capacity of a rank.
-///
-/// # Errors
-///
-/// Returns [`CardError::InvalidRankId`] when `rank_id` is greater than 14.
-pub const fn max_count_for_rank(rank_id: RankId) -> Result<u8, CardError> {
-    match rank_id {
-        0..=12 => Ok(4),
-        SMALL_JOKER_RANK | BIG_JOKER_RANK => Ok(1),
-        _ => Err(CardError::InvalidRankId { rank_id }),
+impl From<CardId> for u8 {
+    fn from(value: CardId) -> Self {
+        value.value()
     }
 }
 
-/// Return all physical card IDs belonging to one rank in stable ascending order.
-///
-/// Standard ranks contain four IDs; joker ranks contain one.
-///
-/// # Errors
-///
-/// Returns [`CardError::InvalidRankId`] when `rank_id` is greater than 14.
-pub fn rank_to_card_ids(rank_id: RankId) -> Result<Vec<CardId>, CardError> {
-    match rank_id {
-        0..=12 => {
-            let first = rank_id * 4;
-            Ok(vec![first, first + 1, first + 2, first + 3])
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CardIdError {
+    pub value: u8,
+}
+
+impl Display for CardIdError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "card ID {} is outside 0..=53", self.value)
+    }
+}
+
+impl Error for CardIdError {}
+
+/// Physical-card multiplicity by ordered rank.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(try_from = "[u8; RANK_COUNT]", into = "[u8; RANK_COUNT]")]
+pub struct RankCounts([u8; RANK_COUNT]);
+
+pub const EMPTY_RANK_COUNTS: RankCounts = RankCounts::empty();
+
+impl RankCounts {
+    pub const fn empty() -> Self {
+        Self([0; RANK_COUNT])
+    }
+
+    pub fn new(values: [u8; RANK_COUNT]) -> Result<Self, RankCountsError> {
+        for rank in Rank::ALL {
+            let count = values[rank.index()];
+            let maximum = rank.capacity();
+            if count > maximum {
+                return Err(RankCountsError::TooManyCards {
+                    rank,
+                    count,
+                    maximum,
+                });
+            }
         }
-        SMALL_JOKER_RANK => Ok(vec![SMALL_JOKER_CARD]),
-        BIG_JOKER_RANK => Ok(vec![BIG_JOKER_CARD]),
-        _ => Err(CardError::InvalidRankId { rank_id }),
-    }
-}
-
-/// Collapse unique physical cards into per-rank counts.
-///
-/// # Errors
-///
-/// Returns [`CardError::InvalidCardId`] for an out-of-range ID or
-/// [`CardError::DuplicateCardId`] if a physical card is repeated.
-pub fn cards_to_rank_counts(cards: &[CardId]) -> Result<RankCounts, CardError> {
-    let mut counts = EMPTY_RANK_COUNTS;
-    let mut seen = [false; CARD_COUNT];
-
-    for &card_id in cards {
-        let rank_id = card_id_to_rank(card_id)?;
-        let card_index = usize::from(card_id);
-        if seen[card_index] {
-            return Err(CardError::DuplicateCardId { card_id });
-        }
-        seen[card_index] = true;
-        counts[usize::from(rank_id)] += 1;
+        Ok(Self(values))
     }
 
-    Ok(counts)
-}
+    pub const fn as_array(&self) -> &[u8; RANK_COUNT] {
+        &self.0
+    }
 
-/// Validate that every count can be represented by the physical deck.
-///
-/// # Errors
-///
-/// Returns [`CardError::TooManyCardsForRank`] when a standard-rank count exceeds
-/// four or a joker count exceeds one.
-pub fn validate_rank_counts(rank_counts: &RankCounts) -> Result<(), CardError> {
-    for (rank_id, &count) in (0_u8..).zip(rank_counts.iter()) {
-        let maximum = max_count_for_rank(rank_id)?;
+    pub fn as_mut_array(&mut self) -> &mut [u8; RANK_COUNT] {
+        &mut self.0
+    }
+
+    pub const fn get(self, rank: Rank) -> u8 {
+        self.0[rank.index()]
+    }
+
+    pub fn set(&mut self, rank: Rank, count: u8) -> Result<(), RankCountsError> {
+        let maximum = rank.capacity();
         if count > maximum {
-            return Err(CardError::TooManyCardsForRank {
-                rank_id,
+            return Err(RankCountsError::TooManyCards {
+                rank,
                 count,
                 maximum,
             });
         }
+        self.0[rank.index()] = count;
+        Ok(())
     }
 
-    Ok(())
-}
-
-/// Expand per-rank counts to a canonical set of unique physical card IDs.
-///
-/// When fewer than four cards of a standard rank are requested, the lowest
-/// physical IDs for that rank are selected. The result is rank-major and stable.
-///
-/// # Errors
-///
-/// Returns [`CardError::TooManyCardsForRank`] when a standard-rank count exceeds
-/// four or a joker count exceeds one.
-pub fn rank_counts_to_card_ids(rank_counts: &RankCounts) -> Result<Vec<CardId>, CardError> {
-    let mut cards = Vec::with_capacity(rank_counts.iter().map(|&count| usize::from(count)).sum());
-    validate_rank_counts(rank_counts)?;
-
-    for (rank_id, &count) in (0_u8..).zip(rank_counts.iter()) {
-        cards.extend(
-            rank_to_card_ids(rank_id)?
-                .into_iter()
-                .take(usize::from(count)),
-        );
+    pub fn add_card(&mut self, card: CardId) -> Result<(), RankCountsError> {
+        let rank = card.rank();
+        let current = self[rank];
+        self.set(
+            rank,
+            current
+                .checked_add(1)
+                .ok_or(RankCountsError::ArithmeticOverflow { rank })?,
+        )
     }
 
-    Ok(cards)
+    pub fn remove_card(&mut self, card: CardId) -> Result<(), RankCountsError> {
+        let rank = card.rank();
+        let current = self[rank];
+        if current == 0 {
+            return Err(RankCountsError::MissingCard { rank });
+        }
+        self.0[rank.index()] = current - 1;
+        Ok(())
+    }
+
+    pub fn card_count(self) -> u16 {
+        self.0.iter().map(|value| u16::from(*value)).sum()
+    }
+
+    pub const fn is_empty(self) -> bool {
+        let mut index = 0;
+        while index < RANK_COUNT {
+            if self.0[index] != 0 {
+                return false;
+            }
+            index += 1;
+        }
+        true
+    }
+
+    pub fn checked_add(self, other: Self) -> Result<Self, RankCountsError> {
+        let mut result = self;
+        for rank in Rank::ALL {
+            let value = self[rank]
+                .checked_add(other[rank])
+                .ok_or(RankCountsError::ArithmeticOverflow { rank })?;
+            result.set(rank, value)?;
+        }
+        Ok(result)
+    }
+
+    pub fn checked_sub(self, other: Self) -> Result<Self, RankCountsError> {
+        let mut result = self;
+        for rank in Rank::ALL {
+            let available = self[rank];
+            let required = other[rank];
+            if required > available {
+                return Err(RankCountsError::InsufficientCards {
+                    rank,
+                    available,
+                    required,
+                });
+            }
+            result.0[rank.index()] = available - required;
+        }
+        Ok(result)
+    }
+
+    pub fn contains(self, other: Self) -> bool {
+        Rank::ALL
+            .into_iter()
+            .all(|rank| self[rank] >= other[rank])
+    }
+
+    pub fn from_cards(cards: impl IntoIterator<Item = CardId>) -> Result<Self, RankCountsError> {
+        let mut counts = Self::empty();
+        for card in cards {
+            counts.add_card(card)?;
+        }
+        Ok(counts)
+    }
+
+    pub fn iter(self) -> impl ExactSizeIterator<Item = (Rank, u8)> {
+        Rank::ALL.into_iter().map(move |rank| (rank, self[rank]))
+    }
 }
+
+impl TryFrom<[u8; RANK_COUNT]> for RankCounts {
+    type Error = RankCountsError;
+
+    fn try_from(value: [u8; RANK_COUNT]) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<RankCounts> for [u8; RANK_COUNT] {
+    fn from(value: RankCounts) -> Self {
+        value.0
+    }
+}
+
+impl Index<Rank> for RankCounts {
+    type Output = u8;
+
+    fn index(&self, rank: Rank) -> &Self::Output {
+        &self.0[rank.index()]
+    }
+}
+
+impl IndexMut<Rank> for RankCounts {
+    fn index_mut(&mut self, rank: Rank) -> &mut Self::Output {
+        &mut self.0[rank.index()]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RankCountsError {
+    InvalidRank {
+        value: u8,
+    },
+    TooManyCards {
+        rank: Rank,
+        count: u8,
+        maximum: u8,
+    },
+    MissingCard {
+        rank: Rank,
+    },
+    InsufficientCards {
+        rank: Rank,
+        available: u8,
+        required: u8,
+    },
+    ArithmeticOverflow {
+        rank: Rank,
+    },
+}
+
+impl Display for RankCountsError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRank { value } => write!(formatter, "rank {value} is outside 0..=14"),
+            Self::TooManyCards {
+                rank,
+                count,
+                maximum,
+            } => write!(
+                formatter,
+                "rank {rank:?} has {count} cards; physical maximum is {maximum}"
+            ),
+            Self::MissingCard { rank } => write!(formatter, "hand has no {rank:?} to remove"),
+            Self::InsufficientCards {
+                rank,
+                available,
+                required,
+            } => write!(
+                formatter,
+                "rank {rank:?} has {available} cards but {required} are required"
+            ),
+            Self::ArithmeticOverflow { rank } => {
+                write!(formatter, "rank-count arithmetic overflowed at {rank:?}")
+            }
+        }
+    }
+}
+
+impl Error for RankCountsError {}
+
+/// Complete permutation of all 54 physical cards.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<CardId>", into = "Vec<CardId>")]
+pub struct DeckOrder(Vec<CardId>);
+
+impl DeckOrder {
+    pub fn identity() -> Self {
+        Self(
+            (0_u8..CARD_COUNT as u8)
+                .map(|value| CardId::new(value).expect("identity deck uses valid card IDs"))
+                .collect(),
+        )
+    }
+
+    pub fn as_slice(&self) -> &[CardId] {
+        &self.0
+    }
+
+    pub fn card(&self, index: usize) -> Option<CardId> {
+        self.0.get(index).copied()
+    }
+}
+
+impl TryFrom<Vec<CardId>> for DeckOrder {
+    type Error = DeckOrderError;
+
+    fn try_from(value: Vec<CardId>) -> Result<Self, Self::Error> {
+        if value.len() != CARD_COUNT {
+            return Err(DeckOrderError::WrongLength { actual: value.len() });
+        }
+        let mut seen = [false; CARD_COUNT];
+        for card in &value {
+            let index = usize::from(card.value());
+            if seen[index] {
+                return Err(DeckOrderError::DuplicateCard { card: *card });
+            }
+            seen[index] = true;
+        }
+        Ok(Self(value))
+    }
+}
+
+impl From<DeckOrder> for Vec<CardId> {
+    fn from(value: DeckOrder) -> Self {
+        value.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeckOrderError {
+    WrongLength { actual: usize },
+    DuplicateCard { card: CardId },
+}
+
+impl Display for DeckOrderError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongLength { actual } => {
+                write!(formatter, "deck has {actual} cards; expected {CARD_COUNT}")
+            }
+            Self::DuplicateCard { card } => {
+                write!(formatter, "deck repeats physical card {}", card.value())
+            }
+        }
+    }
+}
+
+impl Error for DeckOrderError {}
