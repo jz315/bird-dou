@@ -3,17 +3,20 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use ddz_core::{cards_to_rank_counts, CardError, CARD_COUNT};
+use ddz_core::{cards_to_rank_counts, CardError, CardId, CARD_COUNT};
 
 use crate::{GameInitError, PostBidGame, RuleConfig, RuleProfile};
 
-const PLAYER_COUNT: usize = 3;
+/// Number of seats in every supported Dou Dizhu profile.
+pub const PLAYER_COUNT: usize = 3;
 const DEALT_CARD_COUNT: usize = 51;
 
 /// Fixed landlord seat of the post-bid reset primitive.
 pub const POST_BID_LANDLORD: u8 = 0;
 /// Stable identifier of the seeded physical-card shuffle contract.
 pub const SHUFFLE_ALGORITHM: &str = "splitmix64_fisher_yates_v1";
+/// Stable derivation used to create one independent seed for each Huanle deal attempt.
+pub const ATTEMPT_SEED_DERIVATION_ALGORITHM: &str = "splitmix64_attempt_v1";
 
 /// Shuffle and deal one complete post-bid game deterministically.
 ///
@@ -25,7 +28,7 @@ pub const SHUFFLE_ALGORITHM: &str = "splitmix64_fisher_yates_v1";
 /// Returns [`SeededDealError`] if physical-card conversion or authoritative
 /// game initialization rejects the generated deal or supplied rules.
 pub fn deal_post_bid(seed: u64, rules: RuleConfig) -> Result<PostBidGame, SeededDealError> {
-    let deck = shuffled_deck(seed);
+    let deck = shuffled_deck_for_seed(seed);
 
     let mut physical_hands = [
         Vec::with_capacity(20),
@@ -56,7 +59,7 @@ pub fn deal_post_bid(seed: u64, rules: RuleConfig) -> Result<PostBidGame, Seeded
 /// Returns [`SeededDealError`] if physical-card conversion or complete-game
 /// initialization rejects the generated deal or supplied rules.
 pub fn deal_complete(seed: u64, rules: RuleConfig) -> Result<PostBidGame, SeededDealError> {
-    let deck = shuffled_deck(seed);
+    let deck = shuffled_deck_for_seed(seed);
     let mut physical_hands = [
         Vec::with_capacity(17),
         Vec::with_capacity(17),
@@ -91,7 +94,24 @@ pub fn deal_game(seed: u64, rules: RuleConfig) -> Result<PostBidGame, SeededDeal
     }
 }
 
-fn shuffled_deck(seed: u64) -> [u8; CARD_COUNT] {
+/// Derive the deterministic seed for a zero-based Huanle deal attempt.
+///
+/// Every attempt is domain-separated from every other attempt so an all-pass
+/// transition cannot accidentally reuse the original physical-card order.
+#[must_use]
+pub fn derive_attempt_seed(match_seed: u64, attempt_index: u32) -> u64 {
+    let stream = u64::from(attempt_index).wrapping_mul(0xD1B5_4A32_D192_ED03);
+    let mut random = SplitMix64::new(match_seed ^ stream);
+    random.next()
+}
+
+/// Return the complete physical-card order for one deterministic seed.
+///
+/// The returned order is authoritative server state. It is intentionally not an
+/// observation payload and lets v2 attempt replay reconstruct a deal without
+/// depending on a caller-owned random-number generator.
+#[must_use]
+pub fn shuffled_deck_for_seed(seed: u64) -> [CardId; CARD_COUNT] {
     let mut deck = [0_u8; CARD_COUNT];
     for (card_id, card) in (0_u8..).zip(deck.iter_mut()) {
         *card = card_id;

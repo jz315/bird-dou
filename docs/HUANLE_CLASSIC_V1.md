@@ -233,3 +233,9 @@ R001 只验证规格和金标的完整性。R002 新增的
 R002 不声称 Rust 引擎已实现欢乐流程，也不以 JSON corpus 或 parser fixture
 代替 R003–R010 的规则、序列化、replay、Web 和 differential 验收。任何实现
 提交都必须引用相应 case ID，并将其从“规格金标”提升为真实引擎测试。
+
+R003 已实现独立的 `MatchStateV2` / `DealAttemptStateV2` 协调层：每个 attempt
+保留子 seed、物理 deck、随机首叫候选、每个已接受的 `GameActionV2`、动作计数和 all-pass 摘要；all-pass
+自动生成下一次确定性发牌，且完整 decision history 可重放为相同 match state。
+它不实现明牌、叫抢、加倍、出牌或结算；这些阶段只能由后续 ticket 的
+authoritative 状态机向该协调层报告已验证结果。

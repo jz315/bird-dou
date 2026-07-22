@@ -254,6 +254,23 @@ the two engines reject the other schema. The structural fixture in
 tests this contract but is not a deployable Huanle room profile. The v2 state
 machine begins in R003, so no legacy executable path is repurposed as Huanle.
 
+## Huanle match attempts
+
+`HuanleMatchV2` is the v2 lifecycle coordinator, separate from the legacy
+single-game engine. A match seed deterministically derives a child seed, full
+physical deck, and fallback first-caller candidate for every zero-based deal
+attempt. A no-reveal all-pass closes only that attempt: its accepted-action
+count and audit data enter `completed_attempts`, then a `Redeal` system event
+starts the next child seed under the same match. There is no game-rule retry
+limit in this layer.
+
+The coordinator has a replayable decision log and a separately ordered system
+log. It accepts only already-validated phase outcomes; R003 does not use a
+synthetic call, rob, play, or settlement result. Later phase state machines
+attribute accepted actions, resolve the landlord, and report card-play
+completion. This preserves every attempt's action budget while keeping phase
+legality in its owning ticket.
+
 ## `douzero_post_bid`
 
 [`configs/rules/douzero_post_bid.yaml`](../configs/rules/douzero_post_bid.yaml)
