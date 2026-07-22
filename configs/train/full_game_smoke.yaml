@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "trainer_mode": "full_game_joint",
   "rules_path": "configs/rules/canonical_full.yaml",
   "bid_model_path": "configs/model/bid_head_v1.yaml",
@@ -7,6 +7,10 @@
   "feature_path": "configs/model/bird_dou_features_v1.yaml",
   "bidding_training_path": "configs/train/bidding.yaml",
   "cardplay_training_path": "configs/train/bird_dou_dmc_smoke.yaml",
+  "cardplay_checkpoint_path": null,
+  "cardplay_checkpoint_sha256": null,
+  "cardplay_policy_version": null,
+  "allow_random_cardplay_smoke": true,
   "output_directory": "artifacts/train/full_game_smoke",
   "episodes": 1,
   "master_seed": 20260722,

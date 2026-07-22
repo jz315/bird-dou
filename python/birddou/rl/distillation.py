@@ -35,7 +35,7 @@ class InformationSetDistillationConfig:
     teacher_temperature: float = 0.5
     value_coefficient: float = 0.5
     stop_gradient_through_belief_for_kd: bool = True
-    include_true_state: bool = True
+    include_true_state: bool = False
 
     def __post_init__(self) -> None:
         if self.schema_version != IS_KD_SCHEMA_VERSION:
@@ -78,7 +78,7 @@ def information_set_distillation_loss(
     student: BeliefBirdDouModel,
     teacher: PrivilegedTeacher,
     batch: RaggedBatch,
-    true_assignment_a: Tensor,
+    true_assignment_a: Tensor | None,
     config: InformationSetDistillationConfig,
     *,
     generator: torch.Generator | None = None,
@@ -97,6 +97,8 @@ def information_set_distillation_loss(
         generator=generator,
     )
     if config.include_true_state:
+        if true_assignment_a is None:
+            raise ValueError("true-state KD ablation requires a true hidden assignment")
         samples = torch.cat((samples, true_assignment_a[:, None]), dim=1)
     q_values: list[Tensor] = []
     teacher.eval()
@@ -113,7 +115,11 @@ def information_set_distillation_loss(
     )
     terms = teacher_probability * (log_teacher - student_output.policy.policy_log_probability)
     policy_kl = segment_sum(terms, batch.action_offsets).mean()
-    value_loss = functional.huber_loss(student_output.policy.mc_q, q_bar)
+    value_loss = per_state_action_huber_loss(
+        student_output.policy.mc_q,
+        q_bar,
+        batch.action_offsets,
+    )
     loss = policy_kl + config.value_coefficient * value_loss
     if not torch.isfinite(loss):
         raise RuntimeError("IS-KD produced a non-finite loss")
@@ -149,7 +155,11 @@ def direct_state_distillation_loss(
     )
     terms = teacher_probability * (log_teacher - student_output.policy.policy_log_probability)
     policy_kl = segment_sum(terms, batch.action_offsets).mean()
-    value_loss = functional.huber_loss(student_output.policy.mc_q, q_bar)
+    value_loss = per_state_action_huber_loss(
+        student_output.policy.mc_q,
+        q_bar,
+        batch.action_offsets,
+    )
     loss = policy_kl + config.value_coefficient * value_loss
     return InformationSetDistillationOutput(
         loss,
@@ -176,6 +186,28 @@ def privileged_critic_loss(
         raise ValueError("privileged critic targets must be finite [B]")
     prediction = teacher(batch, true_assignment_a).policy.mc_q[chosen]
     return functional.huber_loss(prediction, terminal_target)
+
+
+def per_state_action_huber_loss(
+    prediction: Tensor,
+    target: Tensor,
+    action_offsets: Tensor,
+) -> Tensor:
+    """Average legal-action value errors within states, then across states."""
+    if prediction.ndim != 1 or target.shape != prediction.shape:
+        raise ValueError("KD value prediction and target must be matching action vectors")
+    if action_offsets.dtype != torch.int64 or action_offsets.ndim != 1:
+        raise ValueError("KD action offsets must be a one-dimensional int64 tensor")
+    if action_offsets.numel() < 2 or int(action_offsets[0]) != 0:
+        raise ValueError("KD action offsets must begin at zero and contain a state")
+    if int(action_offsets[-1]) != prediction.numel():
+        raise ValueError("KD action offsets must span every legal action")
+    lengths = action_offsets[1:] - action_offsets[:-1]
+    if torch.any(lengths <= 0):
+        raise ValueError("KD states must each contain at least one legal action")
+    per_action = functional.huber_loss(prediction, target, reduction="none")
+    per_state = segment_sum(per_action, action_offsets) / lengths.to(per_action)
+    return per_state.mean()
 
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:
@@ -212,5 +244,6 @@ __all__ = (
     "direct_state_distillation_loss",
     "information_set_distillation_loss",
     "load_is_kd_config",
+    "per_state_action_huber_loss",
     "privileged_critic_loss",
 )

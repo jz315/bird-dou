@@ -107,6 +107,29 @@ def test_vtrace_config_and_bounded_policy_lag_monitor() -> None:
         monitor.observe(2, torch.tensor([2]), torch.tensor([0.0]))
 
 
+def test_role_split_terminal_rewards_give_opposite_policy_gradient_directions() -> None:
+    """A landlord loss must discourage its action while rewarding farmer actions."""
+    behavior = torch.zeros((1, 2))
+    target = torch.zeros((1, 2))
+    rewards = torch.tensor([[-1.0, 1.0]])
+    result = vtrace_from_log_probabilities(
+        behavior,
+        target,
+        rewards,
+        torch.zeros((1, 2)),
+        torch.zeros(2),
+        torch.ones((1, 2), dtype=torch.bool),
+    )
+    torch.testing.assert_close(result.policy_advantages, rewards)
+
+    chosen_log_probability = torch.zeros((1, 2), requires_grad=True)
+    policy_loss = -(chosen_log_probability * result.policy_advantages.detach()).mean()
+    torch.autograd.backward((policy_loss,))
+    assert chosen_log_probability.grad is not None
+    assert chosen_log_probability.grad[0, 0] > 0.0
+    assert chosen_log_probability.grad[0, 1] < 0.0
+
+
 def _loss_inputs() -> dict[str, torch.Tensor]:
     return {
         "chosen_log_probability": torch.tensor([-0.2, -0.4], requires_grad=True),

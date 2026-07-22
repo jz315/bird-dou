@@ -35,22 +35,26 @@ hidden states sharing one information set. IS-KD instead:
 
 1. runs the Student Belief CRF;
 2. draws `K` exact capacity-preserving hidden hands;
-3. optionally includes the training example's true hand;
-4. scores every legal action with the frozen Teacher for every hand;
-5. averages Q across hidden states;
-6. constructs one segment-softmax target from that average.
+3. scores every legal action with the frozen Teacher for every sampled hand;
+4. averages Q across hidden states;
+5. constructs one segment-softmax target from that average.
 
 ```text
 Q_bar(I,a) = mean_k Q_teacher(s_k,a)
 pi_teacher(a|I) = segment_softmax(Q_bar / temperature)
-loss = KL(pi_teacher || pi_student) + c_value * Huber(mc_q_student, Q_bar)
+loss = KL(pi_teacher || pi_student)
+     + c_value * mean_states(mean_legal_actions(Huber(mc_q_student, Q_bar)))
 ```
 
 Sampling defaults to `K=4`, temperature `0.5`, and stopped gradients through the
-discrete Belief samples. The true-state-only direct KD function remains as an
-explicit ablation. Tests require all sampled states to conserve cards, each
-Teacher target segment to sum to one, Student-only finite gradients, and a
-different averaged target from direct-state KD.
+discrete Belief samples. Strict IS-KD defaults to `include_true_state: false` and
+does not require the training example's true assignment. Enabling that flag is an
+explicit privileged-target ablation; the true-state-only direct KD function is a
+separate ablation. Averaging the value loss once per information-set state prevents
+states with more legal actions from silently receiving more weight. Tests require
+all sampled states to conserve cards, each Teacher target segment to sum to one,
+Student-only finite gradients, strict-target invariance to an unused true hidden
+assignment, and a different averaged target from direct-state KD.
 
 Configuration is frozen in
 [`../configs/model/privileged_teacher_v1.yaml`](../configs/model/privileged_teacher_v1.yaml)

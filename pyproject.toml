@@ -20,6 +20,7 @@ bird-dou-train-dmc = "birddou.cli.train_dmc:main"
 bird-dou-train = "birddou.cli.train:main"
 bird-dou-train-full-game = "birddou.cli.train_full_game:main"
 bird-dou-train-belief = "birddou.cli.train_belief:main"
+bird-dou-web = "birddou.web.server:main"
 
 [project.optional-dependencies]
 model = [

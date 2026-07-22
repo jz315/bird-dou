@@ -72,7 +72,7 @@ class EpisodeMeta:
 
 @dataclass(frozen=True, slots=True)
 class Trajectory:
-    """One complete game; terminal reward is attached before queue insertion."""
+    """One role-homogeneous decision trajectory from a complete game."""
 
     transitions: tuple[Transition, ...]
     meta: EpisodeMeta
@@ -84,6 +84,14 @@ class Trajectory:
             raise ValueError("trajectory final transition must be terminal")
         if any(transition.done for transition in self.transitions[:-1]):
             raise ValueError("trajectory cannot contain transitions after terminal")
+        perspective = self.transitions[0].observer
+        if any(transition.observer != perspective for transition in self.transitions[1:]):
+            raise ValueError("V-trace trajectory cannot mix observer reward perspectives")
+
+    @property
+    def perspective_seat(self) -> int:
+        """Return the one seat whose value/reward semantics define this trajectory."""
+        return self.transitions[0].observer
 
 
 @dataclass(frozen=True, slots=True)

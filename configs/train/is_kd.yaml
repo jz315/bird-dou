@@ -4,5 +4,5 @@
   "teacher_temperature": 0.5,
   "value_coefficient": 0.5,
   "stop_gradient_through_belief_for_kd": true,
-  "include_true_state": true
+  "include_true_state": false
 }

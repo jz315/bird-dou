@@ -24,11 +24,17 @@ and consumers may either drain or explicitly discard the bounded contents.
 
 `Transition` records the serialized native state, observer, canonical selected
 action, behavior log-probability, policy version, transformed reward, terminal
-flag, and raw platform score. `EpisodeMeta` records deal seed, rules hash, all
-three model versions, winner, and zero-sum raw payoff. `TrajectoryReplay` evicts
-only whole oldest episodes and samples from an explicit seed. The Learner can
-reconstruct observations and stable legal actions from serialized states instead
-of storing every candidate feature in replay.
+flag, and raw platform score. An Actor splits each completed game into up to three
+role-homogeneous trajectories: every transition in one trajectory has the same
+observer, and its terminal transition receives that observer's own payoff. This
+makes `gamma = 1` recursion run between consecutive decisions made by the same
+seat instead of crossing opponents' reward perspectives. Mixed-observer
+trajectories are rejected both when constructed and at the Learner boundary.
+`EpisodeMeta` records deal seed, rules hash, all three model versions, winner, and
+zero-sum raw payoff. `TrajectoryReplay` evicts only whole oldest role trajectories
+and samples from an explicit seed. The Learner can reconstruct observations and
+stable legal actions from serialized states instead of storing every candidate
+feature in replay.
 
 ## V-trace and switchable learner
 
@@ -49,7 +55,8 @@ continuation discount, and all inputs and outputs are checked for finite values.
 maximum and p95 version lag, stale fraction, and importance-weight range.
 
 `LearnerTrajectoryBatch` deliberately keeps `raw_reward` and `training_reward`
-as separate time-major tensors. `bird_dou_learner_step` selects the recorded flat
+as separate time-major tensors and carries an `observer_seat` tensor that must be
+constant down every batch column. `bird_dou_learner_step` selects the recorded flat
 action in every ragged segment, computes current log-probabilities, state entropy,
 an action-probability-weighted MC-Q state value, V-trace targets, policy lag, and
 the selected mode's loss in one typed path. `TrainerMode.DMC` uses terminal MC-Q
@@ -82,4 +89,5 @@ The automated M7 gate covers hand-computed on/off-policy targets, terminal cuts,
 extreme ratios and gradients, all mode formulas, bounded lag history, queue-full
 backpressure, shutdown while blocked, Actor cancellation, two simultaneous model
 versions, action/state batch ceilings, 128-request sustained service, bounded
-replay eviction, reconstruction, and unfair-comparison rejection.
+replay eviction, reconstruction, opposing landlord/farmer terminal-gradient signs,
+mixed-role rejection, and unfair-comparison rejection.

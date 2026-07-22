@@ -171,7 +171,7 @@ def test_vectorized_spawned_actor_completes_native_games_and_trajectories() -> N
             ActorSupervisorConfig(
                 actor_processes=1,
                 envs_per_actor=2,
-                trajectory_queue_capacity=2,
+                trajectory_queue_capacity=6,
                 max_restarts_per_actor=0,
                 process_join_timeout_s=3.0,
                 queue_poll_timeout_s=0.02,
@@ -183,17 +183,28 @@ def test_vectorized_spawned_actor_completes_native_games_and_trajectories() -> N
     try:
         bridge.start()
         supervisor.start()
-        outputs = tuple(supervisor.get_trajectory(timeout=30.0) for _ in range(2))
-        assert {output.identity for output in outputs} == {(0, 0), (0, 1)}
+        outputs = tuple(supervisor.get_trajectory(timeout=30.0) for _ in range(6))
+        assert {output.identity for output in outputs} == {
+            (0, episode, seat) for episode in range(2) for seat in range(3)
+        }
         for output in outputs:
             trajectory = output.trajectory
             assert output.inference_requests == len(trajectory.transitions)
+            assert output.perspective_seat == trajectory.perspective_seat
+            assert all(
+                item.observer == trajectory.perspective_seat for item in trajectory.transitions
+            )
             assert trajectory.transitions[-1].done
             assert not any(item.done for item in trajectory.transitions[:-1])
             assert all(item.policy_version == 11 for item in trajectory.transitions)
             assert trajectory.meta.model_versions == (11, 11, 11)
             assert sum(trajectory.meta.raw_payoff) == 0
-            assert sum(item.reward != 0.0 for item in trajectory.transitions) <= 1
+            assert sum(item.reward != 0.0 for item in trajectory.transitions) == 1
+            assert (
+                trajectory.transitions[-1].reward
+                * trajectory.meta.raw_payoff[trajectory.perspective_seat]
+                > 0
+            )
         assert bridge.stats().completed_requests > 0
         assert server.stats().maximum_batch_states == 2
     finally:

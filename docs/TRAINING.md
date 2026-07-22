@@ -102,18 +102,21 @@ full leakage and artifact contract is documented in [`BELIEF.md`](BELIEF.md).
 
 The privileged critic can regress chosen full-state MC-Q to terminal team returns.
 IS-KD keeps Teacher evaluation under `no_grad`, samples four legal hidden hands by
-default, averages action Q across samples plus the optional true state, and trains
-Student policy/value heads. Direct true-state KD is retained only as a required
-ablation. Oracle Dropout is supplied explicitly per Teacher forward so a training
-curriculum can move from full to partially masked hidden hands. See
+default, averages action Q only across Belief samples, and trains Student
+policy/value heads with one value-loss average per information set. Strict IS-KD
+does not consume the true hidden assignment; including it and direct true-state KD
+are explicit privileged ablations. Oracle Dropout is supplied per Teacher forward
+so a training curriculum can move from full to partially masked hidden hands. See
 [`DISTILLATION.md`](DISTILLATION.md).
 
 ## M7 DMC, V-trace, and Hybrid
 
 The distributed boundary now provides action-aware versioned microbatch inference,
-bounded Actor/Learner queues, compact versioned trajectories, standard clipped
-V-trace, and a unified three-mode learner step. Raw platform rewards remain beside
-their stable training transform. A checked experiment contract requires identical
+bounded Actor/Learner queues, role-homogeneous versioned trajectories, standard
+clipped V-trace, and a unified three-mode learner step. Actors split each game by
+observer so a trajectory's terminal reward and every preceding transition share
+one seat perspective; mixed-observer batches are rejected. Raw platform rewards
+remain beside their stable training transform. A checked experiment contract requires identical
 frames, updates, seeds, model, rules, Actor layout, inference limits, and device
 before DMC/V-trace/Hybrid metrics are accepted as comparable. No mode is declared
 stronger without those completed runs. See
@@ -139,8 +142,11 @@ terminal returns. Hand-authored cooperation shaping is rejected. See
 
 The Bid Head is initialized against frozen Cardplay by branching every legal bid
 over information-set-consistent opponent/bottom samples and running native games to
-terminal. Full-game collection then retains both bidding and card-play decisions
-under the same terminal return. The curriculum unfreezes Cardplay only after
+terminal. Research runs require a checksum- and version-pinned pretrained
+Cardplay checkpoint; initialization and the frozen joint stage execute that same
+policy. The explicit random-cardplay smoke exception uses `LongestMovePolicy` only
+to test mechanics. Full-game collection then retains both bidding and card-play
+decisions under the same terminal return. The curriculum unfreezes Cardplay only after
 completed-game, calibration, call-rate, and redeal gates pass; score loss is enabled
 in a later gated stage. Configuration, monitoring, and the empirical claim boundary
 are documented in [`BIDDING.md`](BIDDING.md).

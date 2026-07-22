@@ -67,6 +67,16 @@ supervised updates before joint episodes. The update counter, sampled seed,
 hidden-sample count, loss, optimizer/scheduler/scaler state, and RNG state are
 checkpointed, so interruption cannot silently repeat or skip initialization.
 
+A formal run must name a pretrained Cardplay checkpoint, its SHA-256, and its
+policy version. The trainer verifies those values plus model and feature
+fingerprints before creating any bid label. MC initialization and the frozen joint
+stage execute the same `BirdDouPolicy`; metric-gated unfreezing changes gradient
+flow, not the continuation policy's identity. Checkpoints, manifests, and
+pretraining rows record its hash, policy version, architecture, decision mode, and
+rules hash. `allow_random_cardplay_smoke: true` is the only checkpoint-free path;
+it uses `LongestMovePolicy` solely for a fast mechanical CPU smoke and carries no
+playing-strength claim.
+
 `collect_complete_episode` records bidding and card-play decisions from one full
 game under a single terminal payoff. `build_joint_bid_batch` attaches that payoff
 to every earlier bid, while card-play decisions remain available to the existing

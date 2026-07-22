@@ -55,18 +55,19 @@ class SelfPlayWorkerPayload:
 
 @dataclass(frozen=True, slots=True)
 class ActorTrajectory:
-    """Complete trajectory with actor generation and stable episode identity."""
+    """One seat trajectory with actor generation and stable episode identity."""
 
     actor_id: int
     actor_generation: int
     episode_index: int
+    perspective_seat: int
     inference_requests: int
     trajectory: Trajectory
 
     @property
-    def identity(self) -> tuple[int, int]:
-        """Identity remains stable across actor restarts for deduplication."""
-        return self.actor_id, self.episode_index
+    def identity(self) -> tuple[int, int, int]:
+        """Identity remains stable across actor restarts and seat partitioning."""
+        return self.actor_id, self.episode_index, self.perspective_seat
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,17 +164,21 @@ def run_self_play_actor(
                 slot.active_seed = splitmix64((slot.seed + slot.redeal_count) & ((1 << 64) - 1))
                 slot.environment.reset(slot.active_seed, payload.rules)
                 continue
-            trajectory = _finish_trajectory(slot, result, rules_hash, payload.config.policy_version)
-            context.trajectories.put(
-                ActorTrajectory(
-                    actor_id=context.actor_id,
-                    actor_generation=context.generation,
-                    episode_index=slot.episode_index,
-                    inference_requests=slot.inference_requests,
-                    trajectory=trajectory,
-                ),
-                timeout=payload.channels.response_timeout_s,
+            trajectories = _finish_trajectories(
+                slot, result, rules_hash, payload.config.policy_version
             )
+            for trajectory in trajectories:
+                context.trajectories.put(
+                    ActorTrajectory(
+                        actor_id=context.actor_id,
+                        actor_generation=context.generation,
+                        episode_index=slot.episode_index,
+                        perspective_seat=trajectory.perspective_seat,
+                        inference_requests=len(trajectory.transitions),
+                        trajectory=trajectory,
+                    ),
+                    timeout=payload.channels.response_timeout_s,
+                )
             completed_indices.append(slot_index)
 
         for slot_index in reversed(completed_indices):
@@ -205,41 +210,46 @@ def _new_slot(
     )
 
 
-def _finish_trajectory(
+def _finish_trajectories(
     slot: _EnvironmentSlot,
     result: StepResult,
     rules_hash: str,
     policy_version: int,
-) -> Trajectory:
+) -> tuple[Trajectory, ...]:
+    """Split a game by acting seat so V-trace never crosses opposing rewards."""
     raw = _payoff(result["raw_payoff"], "raw_payoff")
     objective = _payoff(result["objective_payoff"], "objective_payoff")
     winner_seat = result["event"]["actor"]
     landlord = slot.environment.observe(winner_seat)["landlord"]
     if landlord is None:
         raise RuntimeError("terminal self-play trajectory has no landlord")
-    transitions = tuple(
-        Transition(
-            serialized_state=item.serialized_state,
-            observer=item.observer,
-            chosen_action=item.chosen_action,
-            behavior_logprob=item.behavior_logprob,
-            policy_version=item.policy_version,
-            reward=float(objective[item.observer]) if index == len(slot.pending) - 1 else 0.0,
-            done=index == len(slot.pending) - 1,
-            raw_score=raw[item.observer] if index == len(slot.pending) - 1 else 0,
+    meta = EpisodeMeta(
+        seed=slot.seed,
+        rules_hash=rules_hash,
+        model_versions=(policy_version, policy_version, policy_version),
+        winner="landlord" if winner_seat == landlord else "farmer",
+        raw_payoff=raw,
+    )
+    trajectories: list[Trajectory] = []
+    for seat in range(3):
+        decisions = tuple(item for item in slot.pending if item.observer == seat)
+        if not decisions:
+            continue
+        transitions = tuple(
+            Transition(
+                serialized_state=item.serialized_state,
+                observer=seat,
+                chosen_action=item.chosen_action,
+                behavior_logprob=item.behavior_logprob,
+                policy_version=item.policy_version,
+                reward=float(objective[seat]) if index == len(decisions) - 1 else 0.0,
+                done=index == len(decisions) - 1,
+                raw_score=raw[seat] if index == len(decisions) - 1 else 0,
+            )
+            for index, item in enumerate(decisions)
         )
-        for index, item in enumerate(slot.pending)
-    )
-    return Trajectory(
-        transitions=transitions,
-        meta=EpisodeMeta(
-            seed=slot.seed,
-            rules_hash=rules_hash,
-            model_versions=(policy_version, policy_version, policy_version),
-            winner="landlord" if winner_seat == landlord else "farmer",
-            raw_payoff=raw,
-        ),
-    )
+        trajectories.append(Trajectory(transitions=transitions, meta=meta))
+    return tuple(trajectories)
 
 
 def _serialize_action(action: Action) -> bytes:

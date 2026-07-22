@@ -18,6 +18,27 @@ serialization and compact LIFO apply/undo are available for replay and search co
 The Python stack includes structured actors, constrained belief, privileged
 training, distributed learners, farmer coordination, and complete bidding.
 
+## Play in the browser
+
+The local React table plays the complete `canonical_full` ruleset through the
+authoritative Rust engine. It supports bidding, doubling, card selection, legal
+move suggestions, score multipliers, recent-history display, keyboard shortcuts,
+and automatic opponent turns. The browser receives only the human seat's public
+information-set observation.
+
+```powershell
+cd web
+npm install
+npm run build
+cd ..
+python -m birddou.web.server --open
+```
+
+Open `http://127.0.0.1:8765` if the browser does not open automatically. The fast
+rule opponent is always available; when the local full-game smoke checkpoint is
+present, the new-game selector also exposes that real (but deliberately
+not-strength-certified) neural checkpoint.
+
 ## Python single environment
 
 Install the mixed Rust/Python package and drive an authoritative game:

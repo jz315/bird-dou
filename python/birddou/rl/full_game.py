@@ -66,8 +66,8 @@ from birddou.rl.bird_dou_dmc import (
     load_bird_dou_dmc_config,
 )
 
-FULL_GAME_CONFIG_SCHEMA_VERSION = 2
-FULL_GAME_CHECKPOINT_SCHEMA_VERSION = 3
+FULL_GAME_CONFIG_SCHEMA_VERSION = 3
+FULL_GAME_CHECKPOINT_SCHEMA_VERSION = 4
 
 
 class FullGameTrainingError(RuntimeError):
@@ -86,6 +86,10 @@ class FullGameConfig:
     feature_path: Path
     bidding_training_path: Path
     cardplay_training_path: Path
+    cardplay_checkpoint_path: Path | None
+    cardplay_checkpoint_sha256: str | None
+    cardplay_policy_version: int | None
+    allow_random_cardplay_smoke: bool
     output_directory: Path
     episodes: int
     master_seed: int
@@ -125,6 +129,26 @@ class FullGameConfig:
             raise ValueError("maximum_redeals must be non-negative")
         if self.amp and not self.device.startswith("cuda"):
             raise ValueError("full-game AMP requires a CUDA device")
+        if self.cardplay_checkpoint_path is None:
+            if (
+                self.cardplay_checkpoint_sha256 is not None
+                or self.cardplay_policy_version is not None
+            ):
+                raise ValueError("cardplay checkpoint identity requires a checkpoint path")
+            if not self.allow_random_cardplay_smoke:
+                raise ValueError("full-game training requires a pretrained cardplay checkpoint")
+        else:
+            if self.allow_random_cardplay_smoke:
+                raise ValueError("random cardplay smoke opt-in conflicts with a checkpoint")
+            digest = self.cardplay_checkpoint_sha256
+            if (
+                digest is None
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest.lower())
+            ):
+                raise ValueError("cardplay checkpoint SHA-256 must contain 64 hex characters")
+            if self.cardplay_policy_version is None or self.cardplay_policy_version < 0:
+                raise ValueError("cardplay policy version must be non-negative")
 
     def to_dict(self) -> dict[str, object]:
         result = cast(dict[str, object], asdict(self))
@@ -138,12 +162,15 @@ class FullGameConfig:
             "output_directory",
         ):
             result[key] = str(result[key])
+        if self.cardplay_checkpoint_path is not None:
+            result["cardplay_checkpoint_path"] = str(self.cardplay_checkpoint_path)
         return result
 
     def fingerprint(self) -> str:
         payload = self.to_dict()
         del payload["episodes"]
         del payload["output_directory"]
+        del payload["cardplay_checkpoint_path"]
         return _stable_hash(payload)
 
 
@@ -185,6 +212,16 @@ def load_full_game_config(path: Path) -> FullGameConfig:
         feature_path=_project_path(root, _string(values, "feature_path")),
         bidding_training_path=_project_path(root, _string(values, "bidding_training_path")),
         cardplay_training_path=_project_path(root, _string(values, "cardplay_training_path")),
+        cardplay_checkpoint_path=_optional_project_path(
+            root, values.get("cardplay_checkpoint_path"), "cardplay_checkpoint_path"
+        ),
+        cardplay_checkpoint_sha256=_optional_string(
+            values.get("cardplay_checkpoint_sha256"), "cardplay_checkpoint_sha256"
+        ),
+        cardplay_policy_version=_optional_integer(
+            values.get("cardplay_policy_version"), "cardplay_policy_version"
+        ),
+        allow_random_cardplay_smoke=_boolean(values, "allow_random_cardplay_smoke"),
         output_directory=_project_path(root, _string(values, "output_directory")),
         episodes=_integer(values, "episodes"),
         master_seed=_integer(values, "master_seed"),
@@ -239,6 +276,31 @@ class FullGameTrainer:
             raise FullGameTrainingError("cardplay model and feature decomposition caps differ")
         self.bid_model = BidHead(self.bid_model_config).to(config.device)
         self.cardplay_model = BirdDouModel(self.cardplay_model_config).to(config.device)
+        self.continuation_policy_hash = self._load_cardplay_warm_start()
+        self.continuation_policy_version = config.cardplay_policy_version or 0
+        self.cardplay_policy = BirdDouPolicy(
+            f"full-game-cardplay:{self.continuation_policy_hash[:12]}",
+            self.cardplay_model,
+            self.rules,
+            self.feature_config,
+            decision_mode=self.cardplay_training.decision_mode,
+            device=config.device,
+        )
+        self.continuation_policy: Policy = (
+            LongestMovePolicy("random-smoke-continuation")
+            if config.allow_random_cardplay_smoke
+            else self.cardplay_policy
+        )
+        self.continuation_model_architecture = (
+            "longest_move_smoke_only"
+            if config.allow_random_cardplay_smoke
+            else BIRD_DOU_ARCHITECTURE
+        )
+        self.continuation_decision_mode = (
+            "longest_move"
+            if config.allow_random_cardplay_smoke
+            else self.cardplay_training.decision_mode
+        )
         parameters = (*self.bid_model.parameters(), *self.cardplay_model.parameters())
         self.optimizer = torch.optim.AdamW(
             parameters,
@@ -357,7 +419,7 @@ class FullGameTrainer:
             labels = generate_initial_bid_mc_labels(
                 samples,
                 self.rules,
-                LongestMovePolicy("bid-mc-frozen-cardplay"),
+                self.continuation_policy,
                 self.bidding_config.monte_carlo,
             )
             reference = samples[0]
@@ -421,24 +483,77 @@ class FullGameTrainer:
                     "seed": seed,
                     "hidden_samples": self.config.bid_pretraining_hidden_samples,
                     "policy_version": self.state.policy_version,
+                    "continuation_policy_hash": self.continuation_policy_hash,
+                    "continuation_policy_version": self.continuation_policy_version,
+                    "continuation_model_architecture": self.continuation_model_architecture,
+                    "continuation_decision_mode": self.continuation_decision_mode,
+                    "rules_hash": self.rules_hash,
                     "loss": self.losses["bid"],
                 }
             )
             self.save_checkpoint()
 
+    def _load_cardplay_warm_start(self) -> str:
+        """Load and fingerprint the continuation policy before bidding labels exist."""
+        path = self.config.cardplay_checkpoint_path
+        if path is None:
+            return _stable_hash(
+                {
+                    "kind": "random_cardplay_smoke_only",
+                    "master_seed": self.config.master_seed,
+                    "model_fingerprint": self.cardplay_model_config.fingerprint(),
+                    "feature_fingerprint": _stable_hash(asdict(self.feature_config)),
+                }
+            )
+        if not path.is_file():
+            raise FullGameTrainingError(f"cardplay checkpoint does not exist: {path}")
+        expected_digest = self.config.cardplay_checkpoint_sha256
+        expected_version = self.config.cardplay_policy_version
+        if expected_digest is None or expected_version is None:
+            raise FullGameTrainingError("cardplay warm-start identity is incomplete")
+        digest = _sha256_file(path)
+        if digest.lower() != expected_digest.lower():
+            raise FullGameTrainingError("cardplay checkpoint SHA-256 mismatch")
+        checkpoint = _mapping(
+            torch.load(path, map_location=self.config.device, weights_only=True),
+            "cardplay warm-start checkpoint",
+        )
+        model_fingerprint = self.cardplay_model_config.fingerprint()
+        feature_fingerprint = _stable_hash(asdict(self.feature_config))
+        checkpoint_model_fingerprints = tuple(
+            checkpoint[key]
+            for key in ("model_fingerprint", "cardplay_model_fingerprint")
+            if key in checkpoint
+        )
+        if not checkpoint_model_fingerprints or any(
+            value != model_fingerprint for value in checkpoint_model_fingerprints
+        ):
+            raise FullGameTrainingError("cardplay warm-start model fingerprint mismatch")
+        if checkpoint.get("feature_fingerprint") != feature_fingerprint:
+            raise FullGameTrainingError("cardplay warm-start feature fingerprint mismatch")
+        state_value = checkpoint.get("model", checkpoint.get("cardplay_model"))
+        if state_value is None:
+            state_value = checkpoint
+        state = _mapping(state_value, "cardplay warm-start model")
+        try:
+            self.cardplay_model.load_state_dict(state, strict=True)
+        except RuntimeError as error:
+            raise FullGameTrainingError(f"cardplay warm-start weights mismatch: {error}") from error
+        source_version = _integer(
+            _mapping(checkpoint.get("state"), "cardplay training state"),
+            "policy_version",
+        )
+        if source_version != expected_version:
+            raise FullGameTrainingError("cardplay warm-start policy version mismatch")
+        return digest
+
     def _collect_resolved_episode(self) -> tuple[CompleteEpisode, int]:
         base_seed = splitmix64(self.config.master_seed + self.state.episodes)
-        cardplay_policy: Policy
-        if self.curriculum.state.cardplay_frozen:
-            cardplay_policy = LongestMovePolicy("frozen-cardplay-baseline")
-        else:
-            cardplay_policy = BirdDouPolicy(
-                "full-game-cardplay",
-                self.cardplay_model,
-                self.rules,
-                self.feature_config,
-                device=self.config.device,
-            )
+        cardplay_policy: Policy = (
+            self.cardplay_policy
+            if self.config.allow_random_cardplay_smoke and not self.curriculum.state.cardplay_frozen
+            else self.continuation_policy
+        )
         if self.state.episodes < self.config.fixed_bid_warmup_episodes:
             bidding_policy: Policy = FixedBidPolicy(
                 "fixed-bid-initializer",
@@ -629,6 +744,10 @@ class FullGameTrainer:
             "cardplay_model_schema_version": BIRD_DOU_MODEL_SCHEMA_VERSION,
             "cardplay_model_architecture": BIRD_DOU_ARCHITECTURE,
             "trainer_mode": self.config.trainer_mode,
+            "continuation_policy_hash": self.continuation_policy_hash,
+            "continuation_policy_version": self.continuation_policy_version,
+            "continuation_model_architecture": self.continuation_model_architecture,
+            "continuation_decision_mode": self.continuation_decision_mode,
             "bid_model": self.bid_model.state_dict(),
             "cardplay_model": self.cardplay_model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
@@ -666,6 +785,10 @@ class FullGameTrainer:
             "cardplay_model_schema_version": BIRD_DOU_MODEL_SCHEMA_VERSION,
             "cardplay_model_architecture": BIRD_DOU_ARCHITECTURE,
             "trainer_mode": self.config.trainer_mode,
+            "continuation_policy_hash": self.continuation_policy_hash,
+            "continuation_policy_version": self.continuation_policy_version,
+            "continuation_model_architecture": self.continuation_model_architecture,
+            "continuation_decision_mode": self.continuation_decision_mode,
             "frames": self.state.frames,
             "episodes": self.state.episodes,
             "learner_updates": self.state.learner_updates,
@@ -721,6 +844,10 @@ class FullGameTrainer:
             "cardplay_model_schema_version": BIRD_DOU_MODEL_SCHEMA_VERSION,
             "cardplay_model_architecture": BIRD_DOU_ARCHITECTURE,
             "trainer_mode": self.config.trainer_mode,
+            "continuation_policy_hash": self.continuation_policy_hash,
+            "continuation_policy_version": self.continuation_policy_version,
+            "continuation_model_architecture": self.continuation_model_architecture,
+            "continuation_decision_mode": self.continuation_decision_mode,
         }
         for key, value in expected.items():
             if checkpoint.get(key) != value:
@@ -872,6 +999,30 @@ def _bool_value(value: object, label: str) -> bool:
 def _project_path(root: Path, value: str) -> Path:
     path = Path(value)
     return path.resolve() if path.is_absolute() else (root / path).resolve()
+
+
+def _optional_project_path(root: Path, value: object, label: str) -> Path | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be null or a non-empty path")
+    return _project_path(root, value)
+
+
+def _optional_string(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be null or a non-empty string")
+    return value
+
+
+def _optional_integer(value: object, label: str) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{label} must be null or an integer")
+    return value
 
 
 def _stable_hash(value: object) -> str:

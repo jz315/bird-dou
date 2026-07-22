@@ -46,10 +46,11 @@ class LearnerPolicyOutput(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class LearnerTrajectoryBatch:
-    """Time-major actor data with raw and transformed rewards kept separately."""
+    """Time-major, role-homogeneous actor data with separate reward forms."""
 
     behavior_log_probability: Tensor
     actor_policy_version: Tensor
+    observer_seat: Tensor
     raw_reward: Tensor
     training_reward: Tensor
     done: Tensor
@@ -69,7 +70,10 @@ class LearnerTrajectoryBatch:
             self.win_target,
             self.score_target,
         )
-        if any(value.shape != shape for value in (*vectors, self.actor_policy_version, self.done)):
+        if any(
+            value.shape != shape
+            for value in (*vectors, self.actor_policy_version, self.observer_seat, self.done)
+        ):
             raise ValueError("learner trajectory tensors must share [T, B]")
         floating = (self.behavior_log_probability, *vectors, self.bootstrap_value)
         if any(
@@ -78,16 +82,35 @@ class LearnerTrajectoryBatch:
             raise ValueError("learner floating trajectory fields must be finite")
         if self.actor_policy_version.dtype != torch.int64:
             raise ValueError("actor policy versions must use int64")
+        if self.observer_seat.dtype != torch.int64:
+            raise ValueError("observer seats must use int64")
         if self.done.dtype != torch.bool:
             raise ValueError("learner done flags must use bool")
         if self.bootstrap_value.shape != shape[1:]:
             raise ValueError("learner bootstrap value must match the batch axis")
-        if len({value.device for value in (*floating, self.actor_policy_version, self.done)}) != 1:
+        if (
+            len(
+                {
+                    value.device
+                    for value in (
+                        *floating,
+                        self.actor_policy_version,
+                        self.observer_seat,
+                        self.done,
+                    )
+                }
+            )
+            != 1
+        ):
             raise ValueError("learner trajectory tensors must share one device")
         if torch.any(self.behavior_log_probability > 0.0):
             raise ValueError("behavior log probabilities cannot exceed zero")
         if torch.any(self.actor_policy_version < 0):
             raise ValueError("actor policy versions must be non-negative")
+        if torch.any((self.observer_seat < 0) | (self.observer_seat > 2)):
+            raise ValueError("observer seats must be in 0..2")
+        if torch.any(self.observer_seat != self.observer_seat[:1].expand_as(self.observer_seat)):
+            raise ValueError("each V-trace batch column must keep one observer reward perspective")
         if torch.any((self.win_target < 0.0) | (self.win_target > 1.0)):
             raise ValueError("win targets must be probabilities in 0..1")
 

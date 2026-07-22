@@ -33,6 +33,7 @@ from birddou.rl.distillation import (
     direct_state_distillation_loss,
     information_set_distillation_loss,
     load_is_kd_config,
+    per_state_action_huber_loss,
     privileged_critic_loss,
 )
 
@@ -165,7 +166,7 @@ def test_teacher_uses_oracle_state_and_dropout_removes_that_dependency() -> None
 
 
 def test_information_set_kd_averages_legal_samples_and_trains_student_only() -> None:
-    """IS-KD targets normalize per state and every sampled hand obeys conservation."""
+    """The explicit true-state ablation remains legal and trains Student only."""
     torch.manual_seed(6007)
     batch, true_assignment, _ = state_batch()
     student = BeliefBirdDouModel(student_config())
@@ -206,6 +207,48 @@ def test_information_set_kd_averages_legal_samples_and_trains_student_only() -> 
     assert not torch.equal(result.q_bar, direct.q_bar)
 
 
+def test_strict_is_kd_target_is_independent_of_example_true_hidden_state() -> None:
+    """Strict IS-KD uses only Belief samples for a fixed public information set."""
+    torch.manual_seed(6010)
+    batch, true_assignment, alternative = state_batch()
+    student = BeliefBirdDouModel(student_config()).eval()
+    teacher = PrivilegedTeacher(teacher_config()).eval()
+    config = InformationSetDistillationConfig(belief_samples_k=3)
+    assert not config.include_true_state
+
+    first = information_set_distillation_loss(
+        student,
+        teacher,
+        batch,
+        true_assignment,
+        config,
+        generator=torch.Generator().manual_seed(44),
+    )
+    second = information_set_distillation_loss(
+        student,
+        teacher,
+        batch,
+        alternative,
+        config,
+        generator=torch.Generator().manual_seed(44),
+    )
+    torch.testing.assert_close(first.hidden_samples_a, second.hidden_samples_a)
+    torch.testing.assert_close(first.q_bar, second.q_bar)
+    torch.testing.assert_close(first.teacher_probability, second.teacher_probability)
+
+
+def test_kd_value_loss_weights_states_equally_not_actions_equally() -> None:
+    prediction = torch.zeros(4)
+    target = torch.tensor([1.0, 1.0, 1.0, 3.0])
+    offsets = torch.tensor([0, 1, 4], dtype=torch.int64)
+    loss = per_state_action_huber_loss(prediction, target, offsets)
+    per_action = torch.nn.functional.huber_loss(prediction, target, reduction="none")
+    expected = (per_action[:1].mean() + per_action[1:].mean()) / 2.0
+
+    torch.testing.assert_close(loss, expected)
+    assert loss != per_action.mean()
+
+
 def test_privileged_critic_loss_and_student_checkpoint_leakage_boundary() -> None:
     """Centralized supervision backpropagates, while Student weights expose no Oracle module."""
     batch, true_assignment, _ = state_batch()
@@ -234,3 +277,4 @@ def test_versioned_teacher_and_is_kd_configs_load() -> None:
     assert distillation.belief_samples_k == 4
     assert distillation.teacher_temperature == 0.5
     assert distillation.stop_gradient_through_belief_for_kd
+    assert not distillation.include_true_state

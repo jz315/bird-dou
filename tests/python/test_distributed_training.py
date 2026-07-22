@@ -300,6 +300,10 @@ def test_versioned_replay_is_bounded_reproducible_and_reconstructable() -> None:
     assert restored[0] is batch
     with pytest.raises(ValueError, match="terminal"):
         Trajectory((_transition(4, done=False),), _trajectory(4).meta)
+    mixed = (_transition(3), replace(_transition(4), observer=1, done=True))
+    mixed = (replace(mixed[0], done=False), mixed[1])
+    with pytest.raises(ValueError, match="reward perspectives"):
+        Trajectory(mixed, _trajectory(4).meta)
 
 
 def test_unified_learner_step_connects_versions_vtrace_and_hybrid_loss() -> None:
@@ -321,6 +325,7 @@ def test_unified_learner_step_connects_versions_vtrace_and_hybrid_loss() -> None
     trajectory = LearnerTrajectoryBatch(
         behavior_log_probability=output.policy_log_probability[:1].detach().reshape(1, 1),
         actor_policy_version=torch.tensor([[5]], dtype=torch.int64),
+        observer_seat=torch.tensor([[0]], dtype=torch.int64),
         raw_reward=torch.tensor([[16.0]]),
         training_reward=torch.tensor([[1.0]]),
         done=torch.tensor([[True]]),
