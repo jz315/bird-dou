@@ -235,7 +235,7 @@ fn disabled_four_with_two_form_is_rejected_without_affecting_detection() {
         detect_move_with_rules(cards, &rules),
         Err(DetectMoveError::MoveDisabled {
             kind: MoveKind::FourWithTwoSingles,
-            profile: RuleProfile::CanonicalFull,
+            profile: RuleProfile::CanonicalFullLegacyV1,
         })
     ));
 }

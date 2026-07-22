@@ -8,11 +8,12 @@ rust-version.workspace = true
 [dependencies]
 ddz-core = { path = "../ddz-core" }
 serde.workspace = true
+serde_json.workspace = true
 serde_yaml_ng.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-serde_json.workspace = true
 
 [lints]
 workspace = true

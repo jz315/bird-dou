@@ -207,7 +207,7 @@ impl PostBidGame {
         rules: RuleConfig,
     ) -> Result<Self, GameInitError> {
         rules.validate().map_err(GameInitError::RuleConfig)?;
-        if rules.profile != RuleProfile::CanonicalFull {
+        if rules.profile != RuleProfile::CanonicalFullLegacyV1 {
             return Err(GameInitError::UnsupportedProfile {
                 profile: rules.profile,
             });
@@ -371,7 +371,7 @@ impl PostBidGame {
                 Self::new(initial_hands, state.bottom_cards, landlord, rules)
                     .map_err(GameRestoreError::InitialState)?
             }
-            RuleProfile::CanonicalFull => {
+            RuleProfile::CanonicalFullLegacyV1 => {
                 if let Some(landlord) = state.landlord {
                     let landlord_hand = &mut initial_hands[usize::from(landlord)];
                     for (rank_id, count) in landlord_hand.iter_mut().enumerate() {
@@ -390,6 +390,9 @@ impl PostBidGame {
                 Self::new_complete(initial_hands, state.bottom_cards, first_bidder, rules)
                     .map_err(GameRestoreError::InitialState)?
             }
+            RuleProfile::HuanleClassicV1 => unreachable!(
+                "RuleConfigV1 validation rejects huanle_classic_v1 before legacy state construction"
+            ),
         };
         for (expected_sequence, event) in state.history.iter().enumerate() {
             let expected_sequence =
@@ -419,7 +422,6 @@ impl PostBidGame {
         }
         Ok(replay)
     }
-
     /// Rebuild this card-play root with one information-set-consistent hidden allocation.
     ///
     /// Container A is the next absolute seat after `observer`; container B is

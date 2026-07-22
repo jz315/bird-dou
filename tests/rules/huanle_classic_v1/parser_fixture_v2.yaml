@@ -1,0 +1,58 @@
+# Structural parser fixture for R002 only.  It is deliberately not a deployed
+# `configs/rules/huanle_classic_v1.yaml`: the six choices listed in
+# unresolved_config.json remain unfrozen until their rule goldens exist.
+schema_version: 2
+rule_config_id: 2001
+profile: huanle_classic_v1
+deal:
+  player_count: 3
+  cards_per_player: 17
+  bottom_card_count: 3
+  bottom_visible_before_landlord: false
+  bottom_visible_after_landlord: true
+  landlord_plays_first: true
+reveal:
+  before_deal_enabled: true
+  before_deal_factor: 5
+  during_deal_enabled: true
+  factor_by_cards_received: [4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+  after_bottom_enabled: true
+  after_bottom_factor: 2
+  maximum_factor_only: true
+  after_bottom_eligible_roles: landlord_only
+calling:
+  first_caller_policy: first_revealer_else_seeded_seat
+  call_ends_immediately: true
+  all_pass_policy: first_revealer_becomes_landlord_else_redeal
+  passed_call_loses_rob_eligibility: true
+robbing:
+  enabled: true
+  factor_per_successful_rob: 2
+  each_eligible_player_once: true
+  caller_can_reclaim: false
+doubling:
+  enabled: true
+  factor: 2
+  eligibility_mode: room_balance_threshold
+  room_balance_threshold: 100
+card_play:
+  wildcards_enabled: false
+  four_with_two:
+    two_singles_enabled: true
+    two_pairs_enabled: true
+    single_attachments: may_share_rank
+    pair_attachments: distinct_ranks
+  airplane:
+    single_attachments: may_share_rank
+    pair_attachments: distinct_ranks
+settlement:
+  base_unit: 1
+  pairwise_landlord_farmer: true
+  spring:
+    landlord_spring_enabled: false
+    anti_spring_enabled: false
+    multiplier: 1
+  score_cap: null
+  bean_cap_policy: none
+reward:
+  mode: raw_score

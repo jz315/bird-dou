@@ -84,7 +84,10 @@ pub fn deal_complete(seed: u64, rules: RuleConfig) -> Result<PostBidGame, Seeded
 pub fn deal_game(seed: u64, rules: RuleConfig) -> Result<PostBidGame, SeededDealError> {
     match rules.profile {
         RuleProfile::DouzeroPostBid => deal_post_bid(seed, rules),
-        RuleProfile::CanonicalFull => deal_complete(seed, rules),
+        RuleProfile::CanonicalFullLegacyV1 => deal_complete(seed, rules),
+        RuleProfile::HuanleClassicV1 => unreachable!(
+            "RuleConfigV1 validation rejects huanle_classic_v1 before the legacy dealer runs"
+        ),
     }
 }
 

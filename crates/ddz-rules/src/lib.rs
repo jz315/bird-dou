@@ -7,8 +7,12 @@ mod engine;
 mod generator;
 
 pub use config::{
-    AirplaneRules, AttachmentMultiplicity, BiddingMode, BiddingRules, FourWithTwoRules, RewardMode,
-    RuleConfig, RuleConfigError, RuleProfile, SpringRules, RULE_CONFIG_SCHEMA_VERSION,
+    AirplaneRules, AllPassPolicy, AttachmentMultiplicity, BeanCapPolicy, BiddingMode, BiddingRules,
+    CallingRules, CardPlayRules, DealRules, DoubleEligibilityMode, DoublingRules,
+    FirstCallerPolicy, FourWithTwoRules, RevealRoleEligibility, RevealRules, RewardMode,
+    RewardRules, RobbingRules, RuleConfig, RuleConfigError, RuleConfigV1, RuleConfigV2,
+    RuleProfile, SettlementRules, SpringRules, VersionedRuleConfig, RULE_CONFIG_SCHEMA_VERSION,
+    RULE_CONFIG_V1_SCHEMA_VERSION, RULE_CONFIG_V2_SCHEMA_VERSION,
 };
 pub use deal::{
     deal_complete, deal_game, deal_post_bid, SeededDealError, POST_BID_LANDLORD, SHUFFLE_ALGORITHM,

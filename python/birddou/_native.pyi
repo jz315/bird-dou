@@ -6,13 +6,22 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .batch_types import BatchObservation, BatchStepResult, PackedActions
-from .env_types import Action, ExactSolveResult, Observation, RuleConfig, StepResult
+from .env_types import (
+    Action,
+    ExactSolveResult,
+    Observation,
+    RuleConfig,
+    StepResult,
+    VersionedRuleConfig,
+)
 
 API_SCHEMA_VERSION: Final[int]
 BATCH_SCHEMA_VERSION: Final[int]
 SHUFFLE_ALGORITHM: Final[str]
 
 def parse_rule_config(yaml_text: str) -> RuleConfig: ...
+def parse_versioned_rule_config(yaml_text: str) -> VersionedRuleConfig: ...
+def rule_config_hash(yaml_text: str) -> str: ...
 def generate_lead_actions(rank_counts: list[int], rule_config: RuleConfig) -> list[Action]: ...
 def minimum_play_groups(
     rank_count_batch: list[list[int]], rule_config: RuleConfig, count_cap: int

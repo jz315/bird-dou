@@ -15,11 +15,23 @@ from .env import (
     PyDdzEnv,
     generate_lead_actions,
     load_rule_config,
+    load_versioned_rule_config,
     minimum_play_groups,
     parse_rule_config,
+    parse_versioned_rule_config,
+    rule_config_hash,
     solve_endgame,
 )
-from .env_types import Action, ExactSolveResult, Move, Observation, RuleConfig, StepResult
+from .env_types import (
+    Action,
+    ExactSolveResult,
+    Move,
+    Observation,
+    RuleConfig,
+    RuleConfigV2,
+    StepResult,
+    VersionedRuleConfig,
+)
 
 __version__: Final = "0.1.0"
 
@@ -37,11 +49,16 @@ __all__ = (
     "PyBatchDdzEnv",
     "PackedActions",
     "RuleConfig",
+    "RuleConfigV2",
     "StepResult",
+    "VersionedRuleConfig",
     "__version__",
     "load_rule_config",
+    "load_versioned_rule_config",
     "generate_lead_actions",
     "minimum_play_groups",
     "parse_rule_config",
+    "parse_versioned_rule_config",
+    "rule_config_hash",
     "solve_endgame",
 )

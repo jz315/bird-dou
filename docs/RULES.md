@@ -213,7 +213,9 @@ move detection, action generation, transitions, payoff, or observation masking.
 then shuffles physical card IDs with the versioned
 `splitmix64_fisher_yates_v1` algorithm. `douzero_post_bid` assigns seat 0 as landlord;
 `canonical_full` deals 17 cards per seat, retains a hidden three-card bottom, and
-selects the first bidder from the seed.
+selects the first bidder from the seed. `PyDdzEnv` is intentionally a v1 engine:
+it rejects a parsed `huanle_classic_v1` v2 dictionary before any legacy state or
+replay code can interpret it.
 
 Observations, actions, events, and step results use the same Serde field names as
 the Rust protocol and are materialized as ordinary Python dictionaries and lists.
@@ -222,9 +224,9 @@ action, or seat validation is explicit; failed resets and steps do not replace o
 partially mutate a valid game. The checked-in seed-7 golden deal prevents silent
 shuffle drift across dependency, compiler, or platform updates.
 
-## Configuration schema
+## Configuration schemas
 
-Rule configuration schema version 1 records:
+Rule configuration schema version 1 is the legacy schema and records:
 
 - a stable non-zero configuration ID and named profile;
 - landlord first-turn policy;
@@ -237,6 +239,20 @@ Rule configuration schema version 1 records:
 
 Unknown YAML fields and inconsistent combinations are rejected. This prevents a
 misspelled or omitted platform choice from silently becoming a default.
+
+Schema version 2 is a separate Huanle-only wire format. It records the deal,
+reveal, calling, robbing, doubling, card-play, pairwise settlement, and reward
+subsystems as separate required structures. The Huanle parser requires all 18
+reveal-factor entries and every unresolved platform choice, including the caller
+reclaim, attachment, spring, and cap policies. A stable SHA-256 rules hash is
+computed over the complete typed configuration.
+
+The versioned reader dispatches from `schema_version`; v1 readers reject v2 before
+deserializing v2 fields, v2 readers reject v1 before deserializing v1 fields, and
+the two engines reject the other schema. The structural fixture in
+[`tests/rules/huanle_classic_v1/parser_fixture_v2.yaml`](../tests/rules/huanle_classic_v1/parser_fixture_v2.yaml)
+tests this contract but is not a deployable Huanle room profile. The v2 state
+machine begins in R003, so no legacy executable path is repurposed as Huanle.
 
 ## `douzero_post_bid`
 

@@ -43,7 +43,7 @@ fn canonical_profile_makes_every_required_platform_choice_explicit() {
     let config = RuleConfig::from_yaml_str(CANONICAL_FULL_YAML)
         .expect("the checked-in canonical profile must be valid");
 
-    assert_eq!(config.profile, RuleProfile::CanonicalFull);
+    assert_eq!(config.profile, RuleProfile::CanonicalFullLegacyV1);
     assert_eq!(config.bidding.mode, BiddingMode::Score);
     assert_eq!(config.bidding.max_bid, Some(3));
     assert!(config.landlord_plays_first);

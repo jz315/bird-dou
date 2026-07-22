@@ -7,7 +7,9 @@ use ddz_batch::{
     BATCH_SCHEMA_VERSION,
 };
 use ddz_core::{GameAction, RankCounts, RANK_COUNT};
-use ddz_rules::{deal_game, generate_lead_moves, GameError, PostBidGame, RuleConfig};
+use ddz_rules::{
+    deal_game, generate_lead_moves, GameError, PostBidGame, RuleConfig, VersionedRuleConfig,
+};
 use ddz_search::{minimum_play_groups_many, solve_exact_endgame, ExactSearchConfig};
 use numpy::{Element, PyArray1, PyArrayMethods, PyReadonlyArray1};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -45,8 +47,7 @@ impl PyDdzEnv {
         seed: u64,
         rule_config: &Bound<'py, PyDict>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let rules: RuleConfig = from_python(py, rule_config.as_any(), "rule_config")?;
-        rules.validate().map_err(value_error)?;
+        let rules = legacy_rules_from_python(py, rule_config.as_any(), "rule_config")?;
 
         let game = deal_game(seed, rules).map_err(runtime_error)?;
         let observation = game
@@ -74,8 +75,7 @@ impl PyDdzEnv {
     ) -> PyResult<Bound<'py, PyAny>> {
         let hands: [RankCounts; 3] = from_python(py, hands, "complete hands")?;
         let bottom_cards: RankCounts = from_python(py, bottom_cards, "bottom cards")?;
-        let rules: RuleConfig = from_python(py, rule_config.as_any(), "rule_config")?;
-        rules.validate().map_err(value_error)?;
+        let rules = legacy_rules_from_python(py, rule_config.as_any(), "rule_config")?;
         let game = PostBidGame::new_complete(hands, bottom_cards, first_bidder, rules)
             .map_err(value_error)?;
         let observation = game
@@ -94,8 +94,7 @@ impl PyDdzEnv {
         serialized_state: &Bound<'py, PyBytes>,
         rule_config: &Bound<'py, PyDict>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let rules: RuleConfig = from_python(py, rule_config.as_any(), "rule_config")?;
-        rules.validate().map_err(value_error)?;
+        let rules = legacy_rules_from_python(py, rule_config.as_any(), "rule_config")?;
         let game = PostBidGame::deserialize_state(serialized_state.as_bytes(), rules)
             .map_err(value_error)?;
         let observation = game
@@ -117,8 +116,7 @@ impl PyDdzEnv {
         observer: u8,
         assignment_a: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let rules: RuleConfig = from_python(py, rule_config.as_any(), "rule_config")?;
-        rules.validate().map_err(value_error)?;
+        let rules = legacy_rules_from_python(py, rule_config.as_any(), "rule_config")?;
         let assignment_a: RankCounts = from_python(py, assignment_a, "container-A assignment")?;
         let root = PostBidGame::deserialize_state(serialized_state.as_bytes(), rules)
             .map_err(value_error)?;
@@ -208,7 +206,7 @@ pub struct PyBatchDdzEnv {
 impl PyBatchDdzEnv {
     #[new]
     fn new(py: Python<'_>, rule_config: &Bound<'_, PyDict>) -> PyResult<Self> {
-        let rules: RuleConfig = from_python(py, rule_config.as_any(), "rule_config")?;
+        let rules = legacy_rules_from_python(py, rule_config.as_any(), "rule_config")?;
         let batch = BatchDdzEnv::new(rules).map_err(batch_error)?;
         Ok(Self { batch })
     }
@@ -665,6 +663,16 @@ fn from_python<T: DeserializeOwned>(
         .map_err(|error| PyValueError::new_err(format!("invalid {label}: {error}")))
 }
 
+fn legacy_rules_from_python(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    label: &str,
+) -> PyResult<RuleConfig> {
+    let config: VersionedRuleConfig = from_python(py, value, label)?;
+    config.validate().map_err(value_error)?;
+    config.into_v1().map_err(value_error)
+}
+
 fn value_error(error: impl Display) -> PyErr {
     PyValueError::new_err(error.to_string())
 }
@@ -710,6 +718,24 @@ fn parse_rule_config<'py>(py: Python<'py>, yaml_text: &str) -> PyResult<Bound<'p
     to_python(py, &rules, "rule configuration")
 }
 
+/// Parse either supported rule schema without making it executable in the legacy engine.
+#[pyfunction]
+fn parse_versioned_rule_config<'py>(
+    py: Python<'py>,
+    yaml_text: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    let rules = VersionedRuleConfig::from_yaml_str(yaml_text).map_err(value_error)?;
+    to_python(py, &rules, "versioned rule configuration")
+}
+
+/// Return the authoritative stable SHA-256 identity of a complete rule YAML document.
+#[pyfunction]
+fn rule_config_hash(yaml_text: &str) -> PyResult<String> {
+    VersionedRuleConfig::from_yaml_str(yaml_text)
+        .and_then(|rules| rules.rules_hash())
+        .map_err(value_error)
+}
+
 /// Generate every canonical non-Pass lead action for an arbitrary valid hand.
 #[pyfunction]
 fn generate_lead_actions<'py>(
@@ -718,7 +744,7 @@ fn generate_lead_actions<'py>(
     rule_config: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let hand: RankCounts = from_python(py, rank_counts, "rank_counts")?;
-    let rules: RuleConfig = from_python(py, rule_config.as_any(), "rule_config")?;
+    let rules = legacy_rules_from_python(py, rule_config.as_any(), "rule_config")?;
     let moves = generate_lead_moves(&hand, &rules).map_err(value_error)?;
     let actions: Vec<GameAction> = moves.into_iter().map(GameAction::Play).collect();
     to_python(py, &actions, "lead actions")
@@ -733,7 +759,7 @@ fn minimum_play_groups<'py>(
     count_cap: u32,
 ) -> PyResult<Bound<'py, PyAny>> {
     let hands: Vec<RankCounts> = from_python(py, rank_count_batch, "rank_count_batch")?;
-    let rules: RuleConfig = from_python(py, rule_config.as_any(), "rule_config")?;
+    let rules = legacy_rules_from_python(py, rule_config.as_any(), "rule_config")?;
     let summaries = minimum_play_groups_many(&hands, &rules, count_cap).map_err(value_error)?;
     to_python(py, &summaries, "minimum play groups")
 }
@@ -747,8 +773,7 @@ fn solve_endgame<'py>(
     max_total_cards: u8,
     max_nodes: u64,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let rules: RuleConfig = from_python(py, rule_config.as_any(), "rule_config")?;
-    rules.validate().map_err(value_error)?;
+    let rules = legacy_rules_from_python(py, rule_config.as_any(), "rule_config")?;
     let mut game =
         PostBidGame::deserialize_state(serialized_state.as_bytes(), rules).map_err(value_error)?;
     let result = solve_exact_endgame(
@@ -769,6 +794,8 @@ fn native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyDdzEnv>()?;
     module.add_class::<PyBatchDdzEnv>()?;
     module.add_function(wrap_pyfunction!(parse_rule_config, module)?)?;
+    module.add_function(wrap_pyfunction!(parse_versioned_rule_config, module)?)?;
+    module.add_function(wrap_pyfunction!(rule_config_hash, module)?)?;
     module.add_function(wrap_pyfunction!(generate_lead_actions, module)?)?;
     module.add_function(wrap_pyfunction!(minimum_play_groups, module)?)?;
     module.add_function(wrap_pyfunction!(solve_endgame, module)?)?;
