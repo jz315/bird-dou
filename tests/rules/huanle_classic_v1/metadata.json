@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "profile": "huanle_classic_v1",
+  "status": "specification_only",
+  "source": "BIRD-Dou 欢乐斗地主规则与全系统修复计划 v2.0, sections 1 and 8",
+  "compatibility": {
+    "douzero_post_bid": "preserved",
+    "canonical_full": "legacy_experimental_preserved",
+    "new_profile_engine_implemented": false
+  },
+  "files": [
+    "frozen_rules.json",
+    "move_goldens.json",
+    "unresolved_config.json"
+  ]
+}

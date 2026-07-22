@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "profile": "huanle_classic_v1",
+  "rank_order": ["3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2", "small_joker", "big_joker"],
+  "cases": [
+    {
+      "id": "HCV1-MOVE-001",
+      "requirement": "MUST NOT",
+      "positive": {"scenario": "3-4-5-6-7", "expected": {"kind": "straight", "legal": true}},
+      "negative": {"scenario": "10-J-Q-K-A-2", "expected_rejection": "straight cannot contain rank 2 or jokers"}
+    },
+    {
+      "id": "HCV1-MOVE-002",
+      "requirement": "MUST",
+      "positive": {"scenario": "33-44-55", "expected": {"kind": "pair_straight", "legal": true, "chain_length": 3}},
+      "negative": {"scenario": "33-44", "expected_rejection": "pair straight requires at least three pairs"}
+    },
+    {
+      "id": "HCV1-MOVE-003",
+      "requirement": "MUST",
+      "positive": {"scenario": "333-444", "expected": {"kind": "triple_straight", "legal": true, "chain_length": 2}},
+      "negative": {"scenario": "333", "expected_rejection": "triple straight requires at least two triples"}
+    },
+    {
+      "id": "HCV1-MOVE-004",
+      "requirement": "MUST NOT",
+      "positive": {"scenario": "four 7s with two attachments", "expected": {"kind": "four_with_two_singles", "bomb_priority": false}},
+      "negative": {"scenario": "four with two is allowed to beat an ordinary bomb", "expected_rejection": "four with two is not a bomb"}
+    },
+    {
+      "id": "HCV1-MOVE-005",
+      "requirement": "MUST",
+      "positive": {"scenario": "higher airplane body with different wings", "expected": {"comparison_key": "body_only", "beats_lower_body": true}},
+      "negative": {"scenario": "larger attachment rank beats a higher airplane body", "expected_rejection": "airplane comparison ignores wings"}
+    },
+    {
+      "id": "HCV1-MOVE-006",
+      "requirement": "MUST",
+      "positive": {"scenario": "small joker plus big joker against any non-rocket", "expected": {"kind": "rocket", "wins": true}},
+      "negative": {"scenario": "ordinary bomb beats rocket", "expected_rejection": "rocket is maximal"}
+    },
+    {
+      "id": "HCV1-MOVE-007",
+      "requirement": "MUST NOT",
+      "positive": {"scenario": "two single wings supplied by distinct ranks", "expected": {"requires_config": "card_play.airplane.single_attachments"}},
+      "negative": {"scenario": "engine silently accepts or rejects duplicate single wings", "expected_rejection": "attachment multiplicity requires explicit configuration"}
+    },
+    {
+      "id": "HCV1-MOVE-008",
+      "requirement": "MUST NOT",
+      "positive": {"scenario": "two four-with-two single attachments supplied by distinct ranks", "expected": {"requires_config": "card_play.four_with_two.single_attachments"}},
+      "negative": {"scenario": "engine silently accepts or rejects same-rank attachments", "expected_rejection": "attachment multiplicity requires explicit configuration"}
+    }
+  ]
+}

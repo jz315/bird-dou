@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "profile": "huanle_classic_v1",
+  "cases": [
+    {
+      "id": "HCV1-CONFIG-DEAL-REVEAL-SCHEDULE",
+      "requirement": "MUST",
+      "required_config_key": "reveal.factor_by_cards_received",
+      "fallback": "forbidden",
+      "positive": {"scenario": "all 18 factor entries are declared", "expected": {"profile_freeze": "may_validate"}},
+      "negative": {"scenario": "the x4/x3 boundary is absent", "expected_rejection": "profile freeze rejects an implicit reveal schedule"}
+    },
+    {
+      "id": "HCV1-CONFIG-AIRPLANE-SINGLE-WINGS",
+      "requirement": "MUST",
+      "required_config_key": "card_play.airplane.single_attachments",
+      "fallback": "forbidden",
+      "positive": {"scenario": "single-wing rank multiplicity is declared", "expected": {"move_detector_policy": "explicit"}},
+      "negative": {"scenario": "single-wing multiplicity is omitted", "expected_rejection": "profile freeze rejects an implicit airplane policy"}
+    },
+    {
+      "id": "HCV1-CONFIG-FOUR-TWO-SINGLE-WINGS",
+      "requirement": "MUST",
+      "required_config_key": "card_play.four_with_two.single_attachments",
+      "fallback": "forbidden",
+      "positive": {"scenario": "four-with-two single attachment multiplicity is declared", "expected": {"move_detector_policy": "explicit"}},
+      "negative": {"scenario": "same-rank attachment behavior is omitted", "expected_rejection": "profile freeze rejects an implicit four-with-two policy"}
+    },
+    {
+      "id": "HCV1-CONFIG-SPRING",
+      "requirement": "MUST",
+      "required_config_key": "settlement.spring",
+      "fallback": "forbidden",
+      "positive": {"scenario": "spring, anti-spring, and multiplier are all declared", "expected": {"settlement": "may_validate"}},
+      "negative": {"scenario": "spring behavior is assumed from canonical_full", "expected_rejection": "legacy spring settings cannot be inherited"}
+    },
+    {
+      "id": "HCV1-CONFIG-SCORE-CAP",
+      "requirement": "MUST",
+      "required_config_key": "settlement.score_cap",
+      "fallback": "forbidden",
+      "positive": {"scenario": "score cap and bean-cap policy are declared", "expected": {"settlement": "may_validate"}},
+      "negative": {"scenario": "bean bankruptcy behavior is omitted", "expected_rejection": "profile freeze rejects an implicit cap policy"}
+    },
+    {
+      "id": "HCV1-CONFIG-CALLER-RECLAIM",
+      "requirement": "MUST",
+      "required_config_key": "robbing.caller_can_reclaim",
+      "fallback": "forbidden",
+      "positive": {"scenario": "caller reclaim policy is explicitly boolean", "expected": {"rob_queue": "may_validate"}},
+      "negative": {"scenario": "rob queue assumes caller reclaim behavior", "expected_rejection": "profile freeze rejects an implicit reclaim rule"}
+    }
+  ]
+}

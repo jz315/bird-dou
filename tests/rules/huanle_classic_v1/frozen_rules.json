@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "profile": "huanle_classic_v1",
+  "cases": [
+    {
+      "id": "HCV1-DEAL-001",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "one complete deal",
+        "expected": {"deck_cards": 54, "hands": [17, 17, 17], "bottom_cards": 3}
+      },
+      "negative": {
+        "scenario": "one seat receives 18 cards",
+        "expected_rejection": "initial deal must be a 17/17/17 plus 3 partition"
+      }
+    },
+    {
+      "id": "HCV1-BOTTOM-001",
+      "requirement": "MUST NOT",
+      "positive": {
+        "scenario": "before landlord resolution",
+        "expected": {"bottom_visible": false}
+      },
+      "negative": {
+        "scenario": "pre-landlord observation includes bottom rank counts",
+        "expected_rejection": "bottom cards are private before landlord resolution"
+      }
+    },
+    {
+      "id": "HCV1-REVEAL-001",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "seat chooses pre-deal reveal",
+        "expected": {"reveal_factor": 5, "reveal_is_irrevocable": true}
+      },
+      "negative": {
+        "scenario": "seat changes a pre-deal reveal decision after dealing starts",
+        "expected_rejection": "reveal decision cannot be withdrawn"
+      }
+    },
+    {
+      "id": "HCV1-REVEAL-002",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "seat reveals during dealing after a configured received-card count",
+        "expected": {"factor_source": "reveal.factor_by_cards_received", "first_revealer_is_event_ordered": true}
+      },
+      "negative": {
+        "scenario": "implementation infers the x4/x3 boundary from a hard-coded threshold",
+        "expected_rejection": "during-deal reveal factor requires an explicit schedule"
+      }
+    },
+    {
+      "id": "HCV1-REVEAL-003",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "two seats reveal with factors 3 and 5",
+        "expected": {"public_revealed_hands": true, "common_reveal_factor": 5}
+      },
+      "negative": {
+        "scenario": "engine multiplies the two reveal factors or exposes an unrevealed hand",
+        "expected_rejection": "only the maximum factor applies and unrevealed hands stay private"
+      }
+    },
+    {
+      "id": "HCV1-CALL-001",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "first caller chooses CallLandlord",
+        "expected": {"next_phase": "robbing", "provisional_candidate": "caller", "calling_ends": true}
+      },
+      "negative": {
+        "scenario": "another player receives a second CallLandlord action after a call",
+        "expected_rejection": "calling ends immediately after the first call"
+      }
+    },
+    {
+      "id": "HCV1-CALL-002",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "seat 2 is first revealer",
+        "expected": {"first_caller": 2}
+      },
+      "negative": {
+        "scenario": "random first caller overrides an existing first revealer",
+        "expected_rejection": "first revealer has priority"
+      }
+    },
+    {
+      "id": "HCV1-CALL-003",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "all three pass and seat 1 is first revealer",
+        "expected": {"landlord": 1, "match_terminal": false}
+      },
+      "negative": {
+        "scenario": "all three pass with no revealer and match becomes terminal",
+        "expected_rejection": "a no-reveal all-pass starts a new deal attempt"
+      }
+    },
+    {
+      "id": "HCV1-ROB-001",
+      "requirement": "MUST NOT",
+      "positive": {
+        "scenario": "seat 0 passed initial calling and seat 1 called",
+        "expected": {"seat_0_rob_eligible": false}
+      },
+      "negative": {
+        "scenario": "initial caller queue offers Rob to seat 0 after PassCall",
+        "expected_rejection": "PassCall removes rob eligibility"
+      }
+    },
+    {
+      "id": "HCV1-ROB-002",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "A calls, B robs, C passes, then A reclaims when configured",
+        "expected": {"candidate": "A", "successful_rob_count": 2, "each_eligible_action_count_at_most": 1}
+      },
+      "negative": {
+        "scenario": "an eligible seat receives a second Rob decision after already acting",
+        "expected_rejection": "each eligible player acts at most once"
+      }
+    },
+    {
+      "id": "HCV1-ROB-003",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "two successful robs",
+        "expected": {"rob_factor": 4}
+      },
+      "negative": {
+        "scenario": "PassRob changes candidate or doubles stake",
+        "expected_rejection": "only successful Rob changes candidate and factor"
+      }
+    },
+    {
+      "id": "HCV1-POST-001",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "landlord resolves with post-bottom reveal enabled",
+        "expected": {"phase_order": ["bottom_reveal", "post_bottom_reveal", "doubling", "card_play"], "post_bottom_factor": 2}
+      },
+      "negative": {
+        "scenario": "card play begins before bottom is added and publicly revealed",
+        "expected_rejection": "bottom resolution precedes later phases"
+      }
+    },
+    {
+      "id": "HCV1-DOUBLE-001",
+      "requirement": "MUST NOT",
+      "positive": {
+        "scenario": "a farmer and landlord meet the balance threshold",
+        "expected": {"farmer_legal_actions": ["double", "decline"]}
+      },
+      "negative": {
+        "scenario": "a farmer below the threshold receives Double",
+        "expected_rejection": "ineligible seats cannot receive Double"
+      }
+    },
+    {
+      "id": "HCV1-SETTLE-001",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "common factor 1; landlord and farmer 1 double; farmer 2 declines; landlord wins",
+        "expected": {"payoff": [6, -4, -2], "sum": 0}
+      },
+      "negative": {
+        "scenario": "any double applies one global x2 factor to every seat",
+        "expected_rejection": "settlement is pairwise landlord-farmer"
+      }
+    },
+    {
+      "id": "HCV1-PLAY-001",
+      "requirement": "MUST",
+      "positive": {
+        "scenario": "landlord is seat 2",
+        "expected": {"first_cardplay_seat": 2, "turn_order": [2, 0, 1]}
+      },
+      "negative": {
+        "scenario": "card play always starts at absolute seat 0",
+        "expected_rejection": "landlord must lead"
+      }
+    },
+    {
+      "id": "HCV1-PLAY-002",
+      "requirement": "MUST NOT",
+      "positive": {
+        "scenario": "standard non-wildcard move set",
+        "expected": {"laizi_enabled": false}
+      },
+      "negative": {
+        "scenario": "a physical card is substituted as an arbitrary rank",
+        "expected_rejection": "huanle_classic_v1 does not implement laizi"
+      }
+    }
+  ]
+}
