@@ -1,191 +1,90 @@
-//! Deterministic physical-card dealing shared by single and batched wrappers.
+//! Deterministic physical dealing.
 
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use ddz_core::{cards_to_rank_counts, CardError, CardId, CARD_COUNT};
+use ddz_core::{CardId, CardIdError, DealPlan, DeckOrder, DeckOrderError, Seat, CARD_COUNT};
 
-use crate::{GameInitError, PostBidGame, RuleConfig, RuleProfile};
-
-/// Number of seats in every supported Dou Dizhu profile.
-pub const PLAYER_COUNT: usize = 3;
-const DEALT_CARD_COUNT: usize = 51;
-
-/// Fixed landlord seat of the post-bid reset primitive.
-pub const POST_BID_LANDLORD: u8 = 0;
-/// Stable identifier of the seeded physical-card shuffle contract.
 pub const SHUFFLE_ALGORITHM: &str = "splitmix64_fisher_yates_v1";
-/// Stable derivation used to create one independent seed for each Huanle deal attempt.
-pub const ATTEMPT_SEED_DERIVATION_ALGORITHM: &str = "splitmix64_attempt_v1";
+pub const ATTEMPT_SEED_ALGORITHM: &str = "splitmix64_attempt_seed_v1";
+pub const FIRST_PLAYER_ALGORITHM: &str = "splitmix64_mod3_v1";
 
-/// Shuffle and deal one complete post-bid game deterministically.
-///
-/// The first 51 shuffled physical cards are dealt round-robin. The final three
-/// become public bottom cards and are added to seat 0's hand.
-///
-/// # Errors
-///
-/// Returns [`SeededDealError`] if physical-card conversion or authoritative
-/// game initialization rejects the generated deal or supplied rules.
-pub fn deal_post_bid(seed: u64, rules: RuleConfig) -> Result<PostBidGame, SeededDealError> {
-    let deck = shuffled_deck_for_seed(seed);
-
-    let mut physical_hands = [
-        Vec::with_capacity(20),
-        Vec::with_capacity(17),
-        Vec::with_capacity(17),
-    ];
-    for (index, card) in deck[..DEALT_CARD_COUNT].iter().copied().enumerate() {
-        physical_hands[index % PLAYER_COUNT].push(card);
-    }
-    let bottom_cards = cards_to_rank_counts(&deck[DEALT_CARD_COUNT..])?;
-    physical_hands[usize::from(POST_BID_LANDLORD)].extend_from_slice(&deck[DEALT_CARD_COUNT..]);
-    let hands = [
-        cards_to_rank_counts(&physical_hands[0])?,
-        cards_to_rank_counts(&physical_hands[1])?,
-        cards_to_rank_counts(&physical_hands[2])?,
-    ];
-
-    PostBidGame::new(hands, bottom_cards, POST_BID_LANDLORD, rules).map_err(SeededDealError::Game)
-}
-
-/// Shuffle and deal one complete canonical game before bidding.
-///
-/// Each seat receives 17 cards, the final three stay in a hidden bottom-card
-/// container, and `seed % 3` selects the first bidder reproducibly.
-///
-/// # Errors
-///
-/// Returns [`SeededDealError`] if physical-card conversion or complete-game
-/// initialization rejects the generated deal or supplied rules.
-pub fn deal_complete(seed: u64, rules: RuleConfig) -> Result<PostBidGame, SeededDealError> {
-    let deck = shuffled_deck_for_seed(seed);
-    let mut physical_hands = [
-        Vec::with_capacity(17),
-        Vec::with_capacity(17),
-        Vec::with_capacity(17),
-    ];
-    for (index, card) in deck[..DEALT_CARD_COUNT].iter().copied().enumerate() {
-        physical_hands[index % PLAYER_COUNT].push(card);
-    }
-    let bottom_cards = cards_to_rank_counts(&deck[DEALT_CARD_COUNT..])?;
-    let hands = [
-        cards_to_rank_counts(&physical_hands[0])?,
-        cards_to_rank_counts(&physical_hands[1])?,
-        cards_to_rank_counts(&physical_hands[2])?,
-    ];
-    let first_bidder = u8::try_from(seed % 3).unwrap_or_default();
-    PostBidGame::new_complete(hands, bottom_cards, first_bidder, rules)
-        .map_err(SeededDealError::Game)
-}
-
-/// Dispatch deterministic dealing by the validated named rule profile.
-///
-/// # Errors
-///
-/// Returns [`SeededDealError`] from the selected profile's deal constructor.
-pub fn deal_game(seed: u64, rules: RuleConfig) -> Result<PostBidGame, SeededDealError> {
-    match rules.profile {
-        RuleProfile::DouzeroPostBid => deal_post_bid(seed, rules),
-        RuleProfile::CanonicalFullLegacyV1 => deal_complete(seed, rules),
-        RuleProfile::HuanleClassicV1 => unreachable!(
-            "RuleConfigV1 validation rejects huanle_classic_v1 before the legacy dealer runs"
-        ),
-    }
-}
-
-/// Derive the deterministic seed for a zero-based Huanle deal attempt.
-///
-/// Every attempt is domain-separated from every other attempt so an all-pass
-/// transition cannot accidentally reuse the original physical-card order.
-#[must_use]
-pub fn derive_attempt_seed(match_seed: u64, attempt_index: u32) -> u64 {
-    let stream = u64::from(attempt_index).wrapping_mul(0xD1B5_4A32_D192_ED03);
-    let mut random = SplitMix64::new(match_seed ^ stream);
-    random.next()
-}
-
-/// Return the complete physical-card order for one deterministic seed.
-///
-/// The returned order is authoritative server state. It is intentionally not an
-/// observation payload and lets v2 attempt replay reconstruct a deal without
-/// depending on a caller-owned random-number generator.
-#[must_use]
-pub fn shuffled_deck_for_seed(seed: u64) -> [CardId; CARD_COUNT] {
-    let mut deck = [0_u8; CARD_COUNT];
-    for (card_id, card) in (0_u8..).zip(deck.iter_mut()) {
-        *card = card_id;
-    }
-    shuffle(&mut deck, seed);
-    deck
-}
-
-fn shuffle(deck: &mut [u8; CARD_COUNT], seed: u64) {
-    let mut random = SplitMix64::new(seed);
-    for upper_index in (1..CARD_COUNT).rev() {
-        let swap_index = random.sample_below(upper_index + 1);
-        deck.swap(upper_index, swap_index);
-    }
-}
-
+#[derive(Clone, Copy, Debug)]
 struct SplitMix64 {
     state: u64,
 }
 
 impl SplitMix64 {
+    const GOLDEN_GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
+
     const fn new(seed: u64) -> Self {
         Self { state: seed }
     }
 
-    const fn next(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut value = self.state;
-        value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        value ^ (value >> 31)
-    }
-
-    fn sample_below(&mut self, upper: usize) -> usize {
-        let upper = u64::try_from(upper).expect("deck bounds fit in u64");
-        let rejection_threshold = upper.wrapping_neg() % upper;
-        loop {
-            let value = self.next();
-            if value >= rejection_threshold {
-                return usize::try_from(value % upper).expect("sample is below deck length");
-            }
-        }
+    fn next(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(Self::GOLDEN_GAMMA);
+        mix64(self.state)
     }
 }
 
-/// Failure to construct a seeded post-bid game.
-#[derive(Debug)]
-pub enum SeededDealError {
-    /// A generated physical-card collection failed canonical conversion.
-    Cards(CardError),
-    /// The authoritative game rejected the deal or rule profile.
-    Game(GameInitError),
+#[must_use]
+const fn mix64(mut value: u64) -> u64 {
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
 }
 
-impl Display for SeededDealError {
+#[must_use]
+pub const fn derive_attempt_seed(match_seed: u64, attempt: u32) -> u64 {
+    mix64(match_seed ^ (attempt as u64).wrapping_mul(SplitMix64::GOLDEN_GAMMA))
+}
+
+#[must_use]
+pub fn first_player_for_attempt(match_seed: u64, attempt: u32) -> Seat {
+    let value = mix64(derive_attempt_seed(match_seed, attempt)) % 3;
+    Seat::new(u8::try_from(value).expect("value modulo three fits in u8"))
+        .expect("value modulo three is a valid seat")
+}
+
+pub fn shuffled_deck(seed: u64) -> Result<DeckOrder, DealError> {
+    let mut cards = (0_u8..u8::try_from(CARD_COUNT).expect("54 fits in u8"))
+        .map(CardId::new)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(DealError::Card)?;
+    let mut generator = SplitMix64::new(seed);
+    for upper in (1..cards.len()).rev() {
+        let modulus = u64::try_from(upper + 1).expect("deck length fits in u64");
+        let target = usize::try_from(generator.next() % modulus)
+            .expect("shuffle target fits in usize");
+        cards.swap(upper, target);
+    }
+    DeckOrder::try_from(cards).map_err(DealError::Deck)
+}
+
+pub fn deal_plan_for_attempt(match_seed: u64, attempt: u32) -> Result<DealPlan, DealError> {
+    shuffled_deck(derive_attempt_seed(match_seed, attempt)).map(DealPlan::new)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DealError {
+    Card(CardIdError),
+    Deck(DeckOrderError),
+}
+
+impl Display for DealError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Cards(error) => Display::fmt(error, formatter),
-            Self::Game(error) => Display::fmt(error, formatter),
+            Self::Card(error) => Display::fmt(error, formatter),
+            Self::Deck(error) => Display::fmt(error, formatter),
         }
     }
 }
 
-impl Error for SeededDealError {
+impl Error for DealError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Cards(error) => Some(error),
-            Self::Game(error) => Some(error),
+            Self::Card(error) => Some(error),
+            Self::Deck(error) => Some(error),
         }
-    }
-}
-
-impl From<CardError> for SeededDealError {
-    fn from(error: CardError) -> Self {
-        Self::Cards(error)
     }
 }

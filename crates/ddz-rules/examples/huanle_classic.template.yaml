@@ -1,0 +1,41 @@
+# The during-deal ×4/×3 boundary is intentionally not guessed here.
+# Replace the zero entries at the confirmed cards-received indices with 4 or 3.
+schema_version: 1
+rule_config_id: 2001
+profile: huanle_classic
+bottom_cards_public: true
+reveal:
+  before_deal_enabled: true
+  before_deal_factor: 5
+  during_deal_factors: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  after_bottom_enabled: true
+  after_bottom_factor: 2
+calling:
+  enabled: true
+  redeal_on_all_pass: true
+  first_revealer_becomes_landlord_on_all_pass: true
+robbing:
+  enabled: true
+  caller_can_reclaim: true
+  factor_per_successful_rob: 2
+doubling:
+  enabled: true
+  factor: 2
+  minimum_balance_exclusive: 0
+moves:
+  four_with_two:
+    two_singles_enabled: true
+    two_pairs_enabled: true
+    single_attachments: may_share_rank
+    pair_attachments: distinct_ranks
+  airplane:
+    single_attachments: may_share_rank
+    pair_attachments: distinct_ranks
+settlement:
+  base_unit: 1
+  spring:
+    landlord_spring_enabled: false
+    farmer_spring_enabled: false
+    factor: 1
+  pair_score_cap: null
+reward_mode: raw_score

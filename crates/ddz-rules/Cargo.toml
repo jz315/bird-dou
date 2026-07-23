@@ -1,6 +1,6 @@
 [package]
 name = "ddz-rules"
-description = "Rules and legal-action generation for BIRD-Dou"
+description = "Authoritative DouDizhu rules, move generation, and game transitions for BIRD-Dou"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,9 +11,6 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 sha2.workspace = true
-
-[dev-dependencies]
-proptest.workspace = true
 
 [lints]
 workspace = true

@@ -1,0 +1,39 @@
+schema_version: 1
+rule_config_id: 1001
+profile: douzero_post_bid
+bottom_cards_public: true
+reveal:
+  before_deal_enabled: false
+  before_deal_factor: 1
+  during_deal_factors: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  after_bottom_enabled: false
+  after_bottom_factor: 1
+calling:
+  enabled: false
+  redeal_on_all_pass: false
+  first_revealer_becomes_landlord_on_all_pass: false
+robbing:
+  enabled: false
+  caller_can_reclaim: false
+  factor_per_successful_rob: 2
+doubling:
+  enabled: false
+  factor: 2
+  minimum_balance_exclusive: 0
+moves:
+  four_with_two:
+    two_singles_enabled: true
+    two_pairs_enabled: true
+    single_attachments: may_share_rank
+    pair_attachments: distinct_ranks
+  airplane:
+    single_attachments: may_share_rank
+    pair_attachments: distinct_ranks
+settlement:
+  base_unit: 1
+  spring:
+    landlord_spring_enabled: false
+    farmer_spring_enabled: false
+    factor: 1
+  pair_score_cap: null
+reward_mode: average_difference_points

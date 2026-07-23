@@ -21,7 +21,8 @@ pub struct Observation {
     pub own_hand: RankCounts,
     /// Other seats are populated only after those players reveal their hands.
     pub revealed_hands: SeatMap<Option<RankCounts>>,
-    /// Union of every truly hidden current hand plus hidden bottom cards, if any.
+    /// Union of every truly hidden current hand, hidden bottom cards, and cards not yet dealt
+    /// during [`Phase::PreDeal`] or [`Phase::Dealing`].
     pub unknown_pool: RankCounts,
     pub cards_left: SeatMap<u8>,
     pub public_bottom_cards: Option<RankCounts>,
@@ -62,6 +63,20 @@ impl Observation {
             .filter_map(|(_, hand)| *hand)
             .map(RankCounts::card_count)
             .sum();
+        let dealt_cards = self
+            .cards_left
+            .iter()
+            .map(|(_, count)| u16::from(*count))
+            .sum::<u16>();
+        const NON_BOTTOM_CARD_COUNT: u16 = 51;
+        let undealt_non_bottom = if matches!(self.phase, Phase::PreDeal | Phase::Dealing) {
+            if dealt_cards > NON_BOTTOM_CARD_COUNT {
+                return Err(ObservationError::VisibleCardsUnderflow);
+            }
+            NON_BOTTOM_CARD_COUNT - dealt_cards
+        } else {
+            0
+        };
         let expected_hidden = self
             .cards_left
             .iter()
@@ -72,7 +87,8 @@ impl Observation {
                 3
             } else {
                 0
-            };
+            }
+            + undealt_non_bottom;
         if self.unknown_pool.card_count() != expected_hidden {
             return Err(ObservationError::UnknownPoolSize {
                 actual: self.unknown_pool.card_count(),

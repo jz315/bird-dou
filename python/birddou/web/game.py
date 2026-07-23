@@ -21,8 +21,9 @@ from birddou.env_types import (
     RuleConfig,
     StepResult,
 )
-from birddou.eval.baselines import Policy, PolicyDecisionContext
+from birddou.eval.baselines import FixedBidPolicy, Policy, PolicyDecisionContext
 from birddou.eval.paired_deals import role_for_game_seat
+from birddou.models.baseline_douzero import OfficialDouZeroPolicy
 
 RANK_LABELS = ("3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A", "2", "小王", "大王")
 MOVE_LABELS = {
@@ -42,6 +43,20 @@ MOVE_LABELS = {
     "bomb": "炸弹",
     "rocket": "王炸",
 }
+
+_DOUZERO_WEB_MODES = {
+    "douzero_adp": (
+        "douzero_ADP",
+        "官方 DouZero ADP",
+        "官方三角色出牌模型；叫分和加倍使用固定策略",
+    ),
+    "douzero_wp": (
+        "douzero_WP",
+        "官方 DouZero WP",
+        "官方三角色出牌模型；叫分和加倍使用固定策略",
+    ),
+}
+_DOUZERO_CHECKPOINT_FILES = ("landlord.ckpt", "landlord_down.ckpt", "landlord_up.ckpt")
 
 
 class WebGameError(RuntimeError):
@@ -302,6 +317,16 @@ class GameService:
                     "recommended": False,
                 }
             )
+        for mode, (weight_set, label, description) in _DOUZERO_WEB_MODES.items():
+            if self._douzero_weight_set_available(weight_set):
+                modes.append(
+                    {
+                        "id": mode,
+                        "label": label,
+                        "description": description,
+                        "recommended": False,
+                    }
+                )
         return modes
 
     def create_game(
@@ -350,28 +375,64 @@ class GameService:
             cached = self._policies.get(mode)
             if cached is not None:
                 return cached
-            if mode != "bird_dou_smoke":
+            if mode == "bird_dou_smoke":
+                policy = self._load_smoke_policy()
+            elif mode in _DOUZERO_WEB_MODES:
+                policy = self._load_douzero_policy(mode)
+            else:
                 raise WebGameError(f"未知 AI 模式：{mode}")
-            checkpoint = self._smoke_checkpoint()
-            if not checkpoint.is_file():
-                raise WebGameError("Bird-Dou 冒烟模型不存在")
-            try:
-                policy = load_full_game_checkpoint_policy(
-                    "bird-dou-web-smoke",
-                    checkpoint,
-                    self.repository_root / "configs" / "model" / "bid_head_v2.yaml",
-                    self.repository_root / "configs" / "model" / "bird_dou_v1.yaml",
-                    self.repository_root / "configs" / "model" / "bird_dou_features_v1.yaml",
-                    self.rules,
-                    "cpu",
-                )
-            except (OSError, RuntimeError, ValueError) as error:
-                raise WebGameError(f"无法加载 Bird-Dou 冒烟模型：{error}") from error
             self._policies[mode] = policy
             return policy
 
+    def _load_smoke_policy(self) -> Policy:
+        checkpoint = self._smoke_checkpoint()
+        if not checkpoint.is_file():
+            raise WebGameError("Bird-Dou 冒烟模型不存在")
+        try:
+            return load_full_game_checkpoint_policy(
+                "bird-dou-web-smoke",
+                checkpoint,
+                self.repository_root / "configs" / "model" / "bid_head_v2.yaml",
+                self.repository_root / "configs" / "model" / "bird_dou_v1.yaml",
+                self.repository_root / "configs" / "model" / "bird_dou_features_v1.yaml",
+                self.rules,
+                "cpu",
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            raise WebGameError(f"无法加载 Bird-Dou 冒烟模型：{error}") from error
+
+    def _load_douzero_policy(self, mode: str) -> Policy:
+        weight_set, _, _ = _DOUZERO_WEB_MODES[mode]
+        if not self._douzero_weight_set_available(weight_set):
+            raise WebGameError(f"官方 DouZero {weight_set} 权重不存在或不完整")
+        try:
+            cardplay = OfficialDouZeroPolicy.from_manifest(
+                f"bird-dou-web-{weight_set}",
+                self._douzero_manifest(),
+                weight_set,
+                "cpu",
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            raise WebGameError(f"无法加载官方 DouZero {weight_set}：{error}") from error
+        return FixedBidPolicy(
+            policy_id=f"bird-dou-web-{weight_set}-full-game",
+            cardplay=cardplay,
+            score_bid=1,
+            double=False,
+        )
+
     def _smoke_checkpoint(self) -> Path:
         return self.repository_root / "artifacts" / "train" / "full_game_smoke" / "checkpoint.pt"
+
+    def _douzero_manifest(self) -> Path:
+        return self.repository_root / "artifacts" / "baselines" / "douzero" / "manifest.toml"
+
+    def _douzero_weight_set_available(self, weight_set: str) -> bool:
+        manifest = self._douzero_manifest()
+        weight_root = manifest.parent / "weights" / weight_set
+        return manifest.is_file() and all(
+            (weight_root / filename).is_file() for filename in _DOUZERO_CHECKPOINT_FILES
+        )
 
     def _prune_games(self) -> None:
         while len(self._games) > 64:

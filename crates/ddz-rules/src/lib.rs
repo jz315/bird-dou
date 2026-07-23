@@ -1,35 +1,39 @@
-//! Rule configuration, move detection, and legal-action generation for BIRD-Dou.
+#![forbid(unsafe_code)]
+#![allow(
+    clippy::cast_lossless,
+    clippy::cast_possible_truncation,
+    clippy::doc_markdown,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::module_name_repetitions,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
+    clippy::similar_names,
+    clippy::struct_field_names
+)]
+#![doc = "Authoritative rule configuration, move logic, and transitions for BIRD-Dou."]
 
-mod config;
 mod deal;
-mod detector;
+mod economy;
 mod engine;
-mod generator;
-mod match_v2;
+mod moves;
+mod settlement;
+
+pub mod config;
 
 pub use config::{
-    AirplaneRules, AllPassPolicy, AttachmentMultiplicity, BeanCapPolicy, BiddingMode, BiddingRules,
-    CallingRules, CardPlayRules, DealRules, DoubleEligibilityMode, DoublingRules,
-    FirstCallerPolicy, FourWithTwoRules, RevealRoleEligibility, RevealRules, RewardMode,
-    RewardRules, RobbingRules, RuleConfig, RuleConfigError, RuleConfigV1, RuleConfigV2,
-    RuleProfile, SettlementRules, SpringRules, VersionedRuleConfig, RULE_CONFIG_SCHEMA_VERSION,
-    RULE_CONFIG_V1_SCHEMA_VERSION, RULE_CONFIG_V2_SCHEMA_VERSION,
+    AirplaneRules, AttachmentMultiplicity, CallingRules, DoublingRules, FourWithTwoRules,
+    MoveRules, RevealRules, RewardMode, RobbingRules, RuleConfig, RuleConfigError, RuleProfile,
+    SettlementRules, SpringRules, RULE_CONFIG_SCHEMA_VERSION,
 };
 pub use deal::{
-    deal_complete, deal_game, deal_post_bid, derive_attempt_seed, shuffled_deck_for_seed,
-    SeededDealError, ATTEMPT_SEED_DERIVATION_ALGORITHM, PLAYER_COUNT, POST_BID_LANDLORD,
-    SHUFFLE_ALGORITHM,
+    deal_plan_for_attempt, derive_attempt_seed, first_player_for_attempt, shuffled_deck,
+    DealError, ATTEMPT_SEED_ALGORITHM, FIRST_PLAYER_ALGORITHM, SHUFFLE_ALGORITHM,
 };
-pub use detector::{detect_move, detect_move_with_rules, DetectMoveError};
-pub use engine::{
-    GameDeserializeError, GameError, GameInitError, GameRestoreError, HiddenSampleError,
-    PostBidGame, UndoError, UndoToken,
+pub use economy::EconomyContext;
+pub use engine::{Game, GameError, GameRestoreError, RuleStateError, StepResult, UndoToken};
+pub use moves::{
+    detect_move, detect_move_with_rules, generate_follow_moves, generate_lead_moves, move_beats,
+    validate_move_for_rules, DetectMoveError, GenerateMovesError,
 };
-pub use generator::{generate_follow_moves, generate_lead_moves, GenerateMovesError};
-pub use match_v2::{
-    AttemptActionRecordV2, AttemptCompletionReasonV2, AttemptStatusV2, AttemptSummaryV2,
-    CallDecisionV2, CallStateV2, DealAttemptStateV2, DoubleDecisionV2, GameActionV2, HuanleMatchV2,
-    MatchCompletionV2, MatchDecisionEventV2, MatchError, MatchStateV2, PhaseV2, RevealDecisionV2,
-    RevealObservationV2, RevealStateV2, RobDecisionV2, RobStateV2, SystemEventRecordV2,
-    SystemEventV2, PRE_DEAL_REVEAL_ORDER_ALGORITHM,
-};
+pub use settlement::{settle_game, terminal_reward, SettlementError};

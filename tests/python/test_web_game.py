@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 
+from birddou.eval.baselines import FixedBidPolicy
+from birddou.models.baseline_douzero import OfficialDouZeroPolicy
 from birddou.web.game import GameService, WebGameError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -53,3 +55,20 @@ def test_web_game_lists_checkpoint_mode_without_loading_it() -> None:
     modes = service.available_modes()
     assert modes[0]["id"] == "heuristic"
     assert modes[0]["recommended"] is True
+
+
+def test_web_game_loads_official_douzero_when_local_artifacts_exist() -> None:
+    service = GameService(ROOT)
+    if not service._douzero_weight_set_available("douzero_ADP"):
+        pytest.skip("official DouZero artifacts are not available locally")
+
+    modes = {str(mode["id"]) for mode in service.available_modes()}
+    assert "douzero_adp" in modes
+    if service._douzero_weight_set_available("douzero_WP"):
+        assert "douzero_wp" in modes
+
+    policy = service._policy("douzero_adp")
+    assert isinstance(policy, FixedBidPolicy)
+    assert isinstance(policy.cardplay, OfficialDouZeroPolicy)
+    assert policy.cardplay.checkpoint_set_name == "douzero_ADP"
+    assert service._policy("douzero_adp") is policy
