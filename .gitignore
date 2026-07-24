@@ -14,6 +14,9 @@ dist/
 python/birddou/_native*.pyd
 python/birddou/_native*.so
 python/birddou/_native*.dylib
+python/birddou/_guandan_native*.pyd
+python/birddou/_guandan_native*.so
+python/birddou/_guandan_native*.dylib
 
 # Local environments and editor state
 .venv/

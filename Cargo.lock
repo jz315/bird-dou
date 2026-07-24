@@ -119,6 +119,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "guandan-pyo3"
+version = "0.1.0"
+dependencies = [
+ "guandan-rules",
+ "pyo3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "guandan-rules"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_yaml_ng",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

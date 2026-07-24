@@ -1,5 +1,8 @@
 # Scripts
 
+`build_guandan_native.ps1` 构建独立的掼蛋 Python 扩展并放入本地
+`python/birddou` 包，供四人 Web 模式使用；生成的 `.pyd` 已被 Git 忽略。
+
 E008 provides the first executable reproduction workflow:
 
 ```bash

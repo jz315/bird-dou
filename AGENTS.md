@@ -6,6 +6,8 @@
 - `crates/ddz-rules`：权威斗地主规则、状态迁移、可见性和结算；只依赖 `ddz-core`。
 - `crates/ddz-batch`：多环境所有权、缓存、事务和 packed 协议；规则逻辑必须委托给 `ddz-rules`。
 - `crates/ddz-pyo3`：Python 边界；`python/` 为训练、评估、命令行和 Web 服务层；`web/` 是 React/Vite 前端。
+- `crates/guandan-rules`：独立的四人两副牌掼蛋领域与规则状态机；不得依赖或污染固定三人、54 张牌的 `ddz-core`。
+- `crates/guandan-pyo3`：掼蛋专用 Python 边界；保持与尚在迁移的 `ddz-pyo3`、`ddz-search` 解耦。
 - 保持依赖方向：`ddz-core -> ddz-rules -> ddz-batch -> ddz-pyo3/python/web`。不要在上层以外复制规则实现。
 
 ## Rust 约定
@@ -24,6 +26,8 @@
 cargo test -p ddz-core
 cargo test -p ddz-rules
 cargo test -p ddz-batch
+cargo test -p guandan-rules
+cargo test -p guandan-pyo3
 ```
 
 - 修改 Rust 且工作区兼容时，再运行 `cargo test --workspace`；当前 `ddz-search` 与 `ddz-pyo3` 仍在独立迁移中，不要把它们的旧 API 编译错误归因于 core/rules/batch 改动。
@@ -33,10 +37,12 @@ cargo test -p ddz-batch
 ## Web 本地运行
 
 ```powershell
+.\scripts\build_guandan_native.ps1
 cd web
 npm run build
 cd ..
 .\.venv\Scripts\python.exe -m birddou.web.server --open
+
 ```
 
 服务默认监听 `http://127.0.0.1:8765`，前端开发代理指向同一端口。

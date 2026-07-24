@@ -1,0 +1,44 @@
+@media (max-width: 1180px) {
+  .gd-game-layout { grid-template-columns: 175px minmax(610px, 1fr); }
+  .gd-history-panel { display: none; }
+  .gd-card-hitbox { width: 20px; flex-basis: 20px; }
+}
+
+@media (max-width: 860px) {
+  .gd-shell { padding: 10px; }
+  .gd-topbar { height: 58px; grid-template-columns: 1fr auto; }
+  .gd-top-stats { display: none; }
+  .gd-game-layout { display: block; min-height: 0; }
+  .gd-match-panel { display: none; }
+  .gd-table-stage { grid-template-rows: minmax(535px, calc(100vh - 155px)) auto; }
+  .gd-felt-table { min-height: 535px; border-radius: 38px; }
+  .gd-seat { min-width: 0; grid-template-columns: 36px 27px; padding: 6px; }
+  .gd-seat > div:nth-child(2) { display: none; }
+  .gd-seat-left { left: 8px; top: 37%; }
+  .gd-seat-right { right: 8px; top: 37%; }
+  .gd-seat-top { top: 10px; }
+  .gd-table-center { top: 115px; width: 86%; }
+  .gd-current-play { min-height: 190px; }
+  .gd-human-zone { right: 2px; left: 2px; }
+  .gd-hand { justify-content: flex-start; overflow-x: auto; padding-right: 48px; padding-left: 10px; }
+  .gd-card-hitbox { width: 18px; height: 92px; flex-basis: 18px; }
+  .gd-card-hitbox:last-child { width: 62px; flex-basis: 62px; }
+  .gd-card-hand { width: 62px; height: 92px; }
+  .gd-card-played { width: 66px; height: 96px; margin-left: -24px; }
+  .gd-control-deck { position: sticky; z-index: 8; bottom: 0; }
+  .gd-control-deck .suggestion-strip { display: none; }
+  .gd-control-deck .play-controls { width: 100%; justify-content: center; }
+  .gd-selection-kind { display: none; }
+}
+
+@media (max-width: 860px) and (max-height: 720px) {
+  .gd-control-deck { position: static; }
+}
+
+@media (max-width: 480px) {
+  .gd-topbar .top-actions .ghost-button { display: none; }
+  .gd-topbar h1 { font-size: 15px; }
+  .gd-felt-table { border-radius: 25px; }
+  .gd-card-hitbox { width: 15px; flex-basis: 15px; }
+  .gd-finish-grid { grid-template-columns: repeat(2, 1fr); }
+}

@@ -21,6 +21,11 @@ button, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.43; }
 
+.game-mode-switch { position: fixed; z-index: 60; top: 25px; right: 220px; display: flex; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: rgba(4,18,15,.92); box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+.game-mode-switch button { border: 0; border-radius: 7px; padding: 7px 11px; background: transparent; color: #78948b; font-size: 10px; }
+.game-mode-switch button.active { background: var(--gold); color: #173129; font-weight: 800; }
+.mode-loading { min-height: 100vh; display: grid; place-items: center; color: var(--gold); background: #061411; font-size: 12px; }
+
 .app-shell {
   min-height: 100vh;
   padding: 18px 24px 24px;
@@ -96,16 +101,21 @@ kbd { border: 1px solid #486157; border-bottom-width: 2px; border-radius: 4px; p
 .opponent-play { position: absolute; top: 103px; width: 160px; color: #d4dfd9; font-size: 10px; opacity: .78; }
 .opponent-right .opponent-play { right: 0; }
 
-.table-center { position: absolute; top: 148px; left: 50%; transform: translateX(-50%); width: min(460px,70%); display: grid; place-items: center; }
+.table-center { position: absolute; top: 148px; left: 50%; transform: translateX(-50%); width: min(680px,86%); display: grid; place-items: center; }
 .turn-orbit { display: grid; place-items: center; height: 32px; }
 .orbit-ring { position: absolute; width: 185px; height: 32px; border: 1px solid rgba(232,184,91,.2); border-radius: 50%; }
 .orbit-ring::after { content: ""; position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--gold); top: -3px; left: 50%; box-shadow: 0 0 9px var(--gold); }
 .orbit-label { color: #a8c0b7; background: #0c493a; padding: 0 12px; position: relative; font-size: 10px; }
-.last-play { text-align: center; min-height: 105px; margin-top: 16px; }
+.last-play { text-align: center; min-height: 176px; margin-top: 16px; }
 .last-play > p { color: rgba(209,224,216,.35); font-size: 11px; }
 .played-group > strong { display: block; font-size: 10px; color: var(--gold-bright); margin: 7px 0; }
-.played-group > div { display: flex; justify-content: center; }
-.played-group span { width: 36px; height: 48px; display: grid; place-items: center; color: #12251f; background: #f1ede3; border: 1px solid #cfc9ba; border-radius: 5px; margin-left: -8px; font: 700 11px "DM Mono"; box-shadow: 0 5px 12px rgba(0,0,0,.22); }
+.played-group > div { display: flex; flex-wrap: wrap; justify-content: center; min-height: 108px; padding: 3px 0; row-gap: 5px; }
+.played-group span { width: 78px; height: 108px; display: grid; align-content: space-between; justify-items: center; color: #12251f; background: linear-gradient(145deg,#fffdf8,#e9e4d8); border: 1px solid #c9c3b4; border-radius: 8px; margin-left: -26px; padding: 10px 5px; font-family: "DM Mono"; box-shadow: 0 9px 20px rgba(0,0,0,.3); }
+.played-group span:first-child { margin-left: 0; }
+.played-group span.red { color: #bc3b34; }
+.played-group span.black { color: #14231f; }
+.played-group span b { font-size: 27px; line-height: 1; }
+.played-group span i { font: 32px/1 serif; font-style: normal; }
 .pass-copy { color: #9eb3ab; font-weight: 600; letter-spacing: .2em; }
 
 .human-zone { position: absolute; bottom: 11px; left: 18px; right: 18px; }
@@ -188,6 +198,13 @@ kbd { border: 1px solid #486157; border-bottom-width: 2px; border-radius: 4px; p
 }
 
 @media (max-width: 820px) {
+  .game-mode-switch {
+    position: fixed;
+    inset: 17px auto auto 50%;
+    width: max-content;
+    margin: 0;
+    transform: translateX(-50%);
+  }
   .app-shell { padding: 10px; }
   .topbar { grid-template-columns: 1fr auto; height: 58px; }
   .top-stats { display: none; }
@@ -210,6 +227,19 @@ kbd { border: 1px solid #486157; border-bottom-width: 2px; border-radius: 4px; p
   .phase-actions { flex-direction: column; gap: 10px; }
   .action-row { flex-wrap: wrap; justify-content: center; }
   .rules-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 420px) {
+  .game-mode-switch {
+    position: relative;
+    inset: auto;
+    margin: 8px auto 0;
+    transform: none;
+  }
+}
+
+@media (max-width: 820px) and (max-height: 720px) {
+  .control-deck { position: static; }
 }
 
 @media (prefers-reduced-motion: reduce) {

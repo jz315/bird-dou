@@ -14,6 +14,8 @@ from typing import cast
 from urllib.parse import unquote, urlparse
 
 from .game import GameService, WebGameError
+from .guandan import GuandanService
+from .guandan.session import validate_card_ids
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_STATIC_ROOT = REPOSITORY_ROOT / "web" / "dist"
@@ -24,6 +26,7 @@ class BirdDouWebServer(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], static_root: Path) -> None:
         self.game_service = GameService(REPOSITORY_ROOT)
+        self.guandan_service = GuandanService()
         self.static_root = static_root.resolve()
         super().__init__(address, BirdDouRequestHandler)
 
@@ -45,6 +48,9 @@ class BirdDouRequestHandler(BaseHTTPRequestHandler):
             )
             return
         parts = _parts(path)
+        if len(parts) == 4 and parts[:3] == ("api", "guandan", "games"):
+            self._handle(lambda: self.server.guandan_service.get_game(parts[3]))
+            return
         if len(parts) == 3 and parts[:2] == ("api", "games"):
             self._handle(lambda: self.server.game_service.get_game(parts[2]))
             return
@@ -56,6 +62,16 @@ class BirdDouRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         parts = _parts(path)
+        if parts == ("api", "guandan", "games"):
+            self._handle(self._create_guandan_game)
+            return
+        if (
+            len(parts) == 5
+            and parts[:3] == ("api", "guandan", "games")
+            and parts[4] == "actions"
+        ):
+            self._handle(lambda: self._play_guandan(parts[3]))
+            return
         if parts == ("api", "games"):
             self._handle(self._create_game)
             return
@@ -87,6 +103,27 @@ class BirdDouRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(action_index, int):
             raise WebGameError("动作编号必须是整数")
         return self.server.game_service.play(game_id, action_index)
+
+    def _create_guandan_game(self) -> dict[str, object]:
+        body = self._body()
+        seed = body.get("seed")
+        seat = body.get("humanSeat", 0)
+        level = body.get("level", 0)
+        mode = body.get("aiMode", "heuristic")
+        if seed is not None and not isinstance(seed, int):
+            raise WebGameError("牌局种子必须是整数")
+        if not isinstance(seat, int) or not isinstance(level, int) or not isinstance(mode, str):
+            raise WebGameError("掼蛋开局参数无效")
+        return self.server.guandan_service.create_game(
+            seed=seed,
+            human_seat=seat,
+            level=level,
+            ai_mode=mode,
+        )
+
+    def _play_guandan(self, game_id: str) -> dict[str, object]:
+        card_ids = validate_card_ids(self._body().get("cardIds"))
+        return self.server.guandan_service.play(game_id, card_ids)
 
     def _body(self) -> Mapping[str, object]:
         raw_length = self.headers.get("Content-Length", "0")

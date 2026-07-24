@@ -1,0 +1,13 @@
+[package]
+name = "guandan-rules"
+description = "Authoritative two-deck Guandan rules from the Southeast University tournament profile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_yaml_ng.workspace = true
+
+[lints]
+workspace = true

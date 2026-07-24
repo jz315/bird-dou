@@ -5,6 +5,8 @@ members = [
     "crates/ddz-batch",
     "crates/ddz-search",
     "crates/ddz-pyo3",
+    "crates/guandan-rules",
+    "crates/guandan-pyo3",
 ]
 resolver = "2"
 

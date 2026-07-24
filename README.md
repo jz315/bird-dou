@@ -18,15 +18,25 @@ serialization and compact LIFO apply/undo are available for replay and search co
 The Python stack includes structured actors, constrained belief, privileged
 training, distributed learners, farmer coordination, and complete bidding.
 
+## Two-deck Guandan rules
+
+The workspace also contains a deliberately independent `guandan-rules` crate for
+the four-player, two-deck tournament profile published by Southeast University.
+It models physical suits, level wildcards, Guandan move hierarchy, partnership
+play, 接风, promotion, tribute/return and anti-tribute without weakening the
+three-player DouDizhu types. See
+[`crates/guandan-rules/README.md`](crates/guandan-rules/README.md).
+
 ## Play in the browser
 
-The local React table plays the complete `canonical_full` ruleset through the
-authoritative Rust engine. It supports bidding, doubling, card selection, legal
-move suggestions, score multipliers, recent-history display, keyboard shortcuts,
-and automatic opponent turns. The browser receives only the human seat's public
-information-set observation.
+The local React client provides separate DouDizhu and two-deck Guandan modes.
+Both run through authoritative Rust engines and expose only the human seat's
+information set. DouDizhu supports bidding, doubling and selectable DouZero
+opponents; Guandan provides four physical-suit hands, partnerships, level
+wildcards, move suggestions and automatic opponent turns.
 
 ```powershell
+.\scripts\build_guandan_native.ps1
 cd web
 npm install
 npm run build

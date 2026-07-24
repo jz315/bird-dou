@@ -1,0 +1,5 @@
+schema_version: 1
+profile: guandan_two_deck
+starting_level: "2"
+report_remaining_six: true
+report_remaining_ten_on_request: true

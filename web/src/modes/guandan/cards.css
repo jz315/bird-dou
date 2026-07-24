@@ -1,0 +1,386 @@
+/* =========================================================
+   通用牌面
+   ========================================================= */
+
+.gd-card {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+  overflow: hidden;
+  padding: 0;
+
+  border: 1px solid #c9c3b4;
+  border-radius: 8px;
+
+  color: #14231f;
+  background: linear-gradient(145deg, #fffef9, #e8e2d5);
+
+  box-shadow: -3px 8px 14px rgba(0, 0, 0, 0.24);
+  font-family: "DM Mono";
+}
+
+.gd-card.red {
+  color: #c33e36;
+}
+
+.gd-card.black {
+  color: #17231f;
+}
+
+
+/* =========================================================
+   手牌容器密度
+   ========================================================= */
+
+/*
+ * --gd-card-step 表示相邻牌起点之间的距离。
+ *
+ * 牌宽为 65px：
+ * step 越小，牌压得越紧；
+ * 但无论多紧，右边的牌永远盖住左边的牌。
+ */
+
+.gd-hand {
+  --gd-card-step: 38px;
+
+  isolation: isolate;
+  overflow: visible;
+}
+
+/* 1～16 张 */
+.gd-hand.gd-hand--loose {
+  --gd-card-step: 38px;
+}
+
+/* 17～20 张 */
+.gd-hand.gd-hand--medium {
+  --gd-card-step: 32px;
+}
+
+/* 21～24 张 */
+.gd-hand.gd-hand--dense {
+  --gd-card-step: 27px;
+}
+
+/* 25 张及以上 */
+.gd-hand.gd-hand--very-dense {
+  --gd-card-step: 24px;
+}
+
+
+/* =========================================================
+   手牌槽位
+   ========================================================= */
+
+/*
+ * 关键结构：
+ *
+ * 每个 button 不是完整牌宽，而只是一个窄槽位。
+ * 内部 .gd-card-hand 仍是完整的 65px。
+ *
+ * 例如 step = 24px：
+ *
+ * 第一张起点 x=0
+ * 第二张起点 x=24
+ * 第三张起点 x=48
+ *
+ * 后面的元素 z-index 更高，所以后面的牌盖住前面的牌。
+ */
+
+.gd-card-hitbox {
+  position: relative;
+
+  width: var(--gd-card-step);
+  height: 118px;
+  flex: 0 0 var(--gd-card-step);
+
+  overflow: visible;
+  padding: 0;
+  border: 0;
+  outline: 0;
+
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+
+  /*
+   * 只允许纵向移动。
+   * 不对 z-index、宽度或 margin 做动画。
+   */
+  transform: translateY(0);
+  transition: transform 0.16s ease;
+}
+
+/*
+ * 最后一张没有后续牌覆盖，
+ * 必须保留完整宽度，否则右侧会被裁掉。
+ */
+.gd-card-hitbox:last-child {
+  width: 65px;
+  flex-basis: 65px;
+}
+
+
+/* =========================================================
+   手牌实际牌面
+   ========================================================= */
+
+.gd-card-hand {
+  width: 65px;
+  height: 96px;
+
+  transition:
+    filter 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.gd-card-hitbox > .gd-card-hand {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+
+  /*
+   * 点击由外层槽位接收。
+   * 防止完整牌面抢走相邻槽位的鼠标事件。
+   */
+  pointer-events: none;
+}
+
+
+/* =========================================================
+   Hover
+   ========================================================= */
+
+/*
+ * Hover 只提亮。
+ *
+ * 严禁在这里添加：
+ * z-index: 100;
+ *
+ * 否则鼠标经过左边牌时，它又会盖住右边牌。
+ */
+.gd-card-hitbox:hover:not(:disabled) > .gd-card-hand {
+  filter: brightness(1.05);
+}
+
+
+/* =========================================================
+   选中
+   ========================================================= */
+
+/*
+ * 选中仅向上移动。
+ *
+ * 严禁在这里设置任何 z-index。
+ * z-index 永远由 index + 1 决定。
+ */
+.gd-card-hitbox.selected {
+  transform: translateY(-22px);
+}
+
+.gd-card-hitbox.selected > .gd-card-hand {
+  box-shadow:
+    0 0 0 2px var(--gold),
+    -3px 13px 18px rgba(0, 0, 0, 0.32);
+}
+
+
+/* =========================================================
+   键盘焦点与禁用
+   ========================================================= */
+
+.gd-card-hitbox:focus-visible > .gd-card-hand {
+  outline: 3px solid #fff0b5;
+  outline-offset: 3px;
+}
+
+.gd-card-hitbox:disabled {
+  cursor: default;
+}
+
+.gd-card-hitbox:disabled > .gd-card-hand {
+  opacity: 0.84;
+}
+
+
+/* =========================================================
+   出牌区和迷你牌
+   ========================================================= */
+
+.gd-card-played {
+  width: 78px;
+  height: 112px;
+  margin-left: -27px;
+}
+
+/*
+ * 出牌区按照 DOM 顺序绘制，
+ * 后面的牌自然覆盖前面的牌。
+ */
+.gd-card-played:first-child {
+  margin-left: 0;
+}
+
+.gd-card-mini {
+  width: 38px;
+  height: 53px;
+}
+
+
+/* =========================================================
+   牌面文字
+   ========================================================= */
+
+.gd-card-corner {
+  position: absolute;
+  top: 6px;
+  left: 7px;
+
+  display: grid;
+  text-align: center;
+}
+
+.gd-card-corner b {
+  font: 800 15px/1 "DM Mono";
+}
+
+.gd-card-corner i {
+  margin-top: 2px;
+
+  font: 13px/1 serif;
+  font-style: normal;
+}
+
+.gd-card-center {
+  height: 100%;
+
+  display: grid;
+  place-items: center;
+
+  font: 31px serif;
+  opacity: 0.9;
+}
+
+
+/* =========================================================
+   大小王
+   ========================================================= */
+
+.gd-card.joker .gd-card-corner i {
+  writing-mode: vertical-rl;
+
+  font: 6px "DM Mono";
+  letter-spacing: 0.06em;
+}
+
+.gd-card.joker .gd-card-center {
+  font-family: "DM Mono";
+}
+
+.gd-card.joker .gd-card-center em {
+  width: 34px;
+  height: 34px;
+
+  display: grid;
+  place-items: center;
+
+  border: 2px solid currentColor;
+  border-radius: 50%;
+
+  font-size: 19px;
+  font-style: normal;
+}
+
+.gd-card.joker .gd-card-center small {
+  margin-top: -28px;
+
+  font-size: 6px;
+  letter-spacing: 0.15em;
+}
+
+
+/* =========================================================
+   逢人配
+   ========================================================= */
+
+.gd-card.wild {
+  box-shadow:
+    inset 0 0 0 2px rgba(232, 184, 91, 0.72),
+    -3px 8px 14px rgba(0, 0, 0, 0.24);
+}
+
+.gd-wild-tag {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+
+  width: 17px;
+  height: 17px;
+
+  display: grid;
+  place-items: center;
+
+  border-radius: 50%;
+
+  color: #fff5db;
+  background: #b94d3e;
+
+  font: 700 8px "Noto Sans SC";
+}
+
+
+/* =========================================================
+   当前出牌展示
+   ========================================================= */
+
+.gd-played-move > strong {
+  display: block;
+
+  margin: 6px 0 7px;
+
+  color: var(--gold-bright);
+  font-size: 10px;
+}
+
+.gd-played-move > div {
+  min-height: 113px;
+  max-width: 100%;
+
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: center;
+  align-items: flex-start;
+
+  padding-right: 0;
+}
+
+.gd-pass-copy {
+  margin-top: 45px;
+
+  color: #abc0b8;
+
+  font-weight: 700;
+  letter-spacing: 0.2em;
+}
+
+
+/* =========================================================
+   长牌型缩放
+   ========================================================= */
+
+.gd-played-compact {
+  margin-top: 10px;
+
+  transform: scale(0.85);
+  transform-origin: top center;
+}
+
+
+/* =========================================================
+   无效牌型
+   ========================================================= */
+
+.gd-selection-kind.invalid {
+  color: var(--gd-cinnabar);
+  font-weight: 700;
+}
